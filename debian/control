@@ -1,0 +1,16 @@
+Source: curio
+Maintainer: Matthias Urlichs <matthias@urlichs.de>
+Section: python
+Priority: optional
+Build-Depends: dh-python, python3-setuptools, python3-all, debhelper (>= 9)
+Standards-Version: 3.9.6
+Homepage: https://github.com/dabeaz/curio
+
+Package: python3-curio
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends}
+Description: Curio - Concurrent I/O
+ .
+ Curio is a library for performing concurrent I/O with coroutines in Python 3.
+ .
+
