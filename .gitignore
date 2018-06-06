@@ -2,6 +2,7 @@ docs/_build
 __pycache__/
 .vscode
 venv*
+curio.egg-info
 
 benchmarks/curio/
 benchmarks/env/
