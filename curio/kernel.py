@@ -64,6 +64,7 @@ from .traps import _read_wait, Traps
 from . import meta
 from .debug import _create_debuggers
 from .timequeue import TimeQueue
+from .activation import Activation
 
 # ----------------------------------------------------------------------
 # Underlying kernel that drives everything
@@ -116,6 +117,7 @@ class Kernel(object):
         if debug:
             self._activations.extend(_create_debuggers(debug))
 
+
     def __del__(self):
         if self._shutdown_funcs is not None:
             raise RuntimeError(
@@ -125,8 +127,7 @@ class Kernel(object):
         return self
 
     def __exit__(self, ty, val, tb):
-        if not ty or ty in { KeyboardInterrupt, SystemExit }:
-            self.run(shutdown=True)
+        self.run(shutdown=True)
 
     def _call_at_shutdown(self, func):
         self._shutdown_funcs.append(func)
@@ -514,7 +515,13 @@ class Kernel(object):
         # absolute flag indicates whether or not an absolute or relative clock
         # interval has been provided
         def _trap_sleep(clock, absolute):
+            nonlocal current
             if _check_cancellation():
+                return
+
+            if clock == 0:
+                _reschedule_task(current)
+                current = None
                 return
 
             # We used to have a special case where sleep periods <= 0 would
@@ -561,6 +568,7 @@ class Kernel(object):
             if previous and previous >= 0 and previous < now:
                 # Perhaps create a TaskTimeout pending exception here.
                 _set_timeout(previous)
+                current.next_value = now
             else:
                 _set_timeout(previous)
                 current.timeout = previous
@@ -608,7 +616,7 @@ class Kernel(object):
                 task._last_io = None
 
         # Initialize activations
-        _activations = [ act() if (isinstance(act, type) and issubclass(act, ActivationBase)) else act
+        _activations = [ act() if (isinstance(act, type) and issubclass(act, Activation)) else act
                          for act in kernel._activations ]
         kernel._activations = _activations
 
@@ -632,6 +640,8 @@ class Kernel(object):
                     main_task._joined = True
                 coro = (yield (main_task.next_value, main_task.next_exc)) if main_task else (yield (None, None))
                 main_task = _new_task(coro) if coro else None
+                if main_task:
+                    main_task.report_crash = False
                 del coro
 
             # ------------------------------------------------------------
@@ -790,7 +800,7 @@ class Kernel(object):
                     current = active = None
 
 def run(corofunc, *args, with_monitor=False, selector=None,
-        debug=None, activations=None, **extra):
+        debug=None, activations=None, **kernel_extra):
     '''
     Run the curio kernel with an initial task and execute until all
     tasks terminate.  Returns the task's final result (if any). This
@@ -805,8 +815,7 @@ def run(corofunc, *args, with_monitor=False, selector=None,
     '''
 
     kernel = Kernel(selector=selector, debug=debug, activations=activations,
-                    **extra)
-
+                    **kernel_extra)
 
     # Check if a monitor has been requested
     if with_monitor or 'CURIOMONITOR' in os.environ:   # pragma: no cover

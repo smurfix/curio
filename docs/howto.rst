@@ -57,7 +57,7 @@ Here is an example of a simple UDP echo server using sockets::
             await sock.sendto(data, addr)
 
     if __name__ == '__main__':
-        curio.run(main, ('', 26000))
+        curio.run(udp_echo, ('', 26000))
 
 At this time, there are no high-level function (i.e., similar to
 ``tcp_server()``) to run a UDP server. 
@@ -325,9 +325,10 @@ threads is to use curio's ``UniversalQueue`` class::
 
     async def main():
         q = curio.UniversalQueue()
-        prod_task = threading.Thread(target=producer, args=(q,)).start()
+        prod_task = threading.Thread(target=producer, args=(q,))
+        prod_task.start()
         cons_task = await curio.spawn(consumer, q)
-        await run_in_thread(prod_task.join)
+        await curio.run_in_thread(prod_task.join)
         await cons_task.cancel()
 
     if __name__ == '__main__':

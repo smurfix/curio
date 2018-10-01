@@ -163,6 +163,10 @@ that serves as a kind of wrapper around the underlying coroutine that's executin
 
    Create a stack traceback string for the task.  Useful for debugging.
 
+.. method:: Task.where()
+
+   Return a (filename, lineno) tuple where the task is executing. For debugging.
+
 The following public attributes are available of :class:`Task` instances:
 
 .. attribute:: Task.id
@@ -229,37 +233,39 @@ a ``TaskGroup`` instance.
 
 The following methods are supported on ``TaskGroup`` instances:
 
-.. asyncmethod:: TaskGroup.spawn(corofunc, *args, ignore_result=False, report_crash=True)
+.. asyncmethod:: TaskGroup.spawn(corofunc, *args, report_crash=True)
 
-   Create a new task that's part of the group.  Returns a ``Task`` instance.
-   The *ignore_result* flag indicates whether or not the group cares about the 
-   task's final result.  If specified, the result of the task is ignored.
-   The task is still considered part of the group for purposes of cancellation
-   however (i.e., if the task group is cancelled, any running tasks with an ignored result
-   in the group are also cancelled).   The *report_crash* flag controls whether a traceback
-   is logged when a task exits with an uncaught exception.
+   Create a new task that's part of the group.  Returns a ``Task``
+   instance.  The *report_crash* flag controls whether a traceback is
+   logged when a task exits with an uncaught exception.
 
 .. asyncmethod:: TaskGroup.add_task(coro)
 
    Adds an already existing task to the task group. 
 
-.. asyncmethod:: TaskGroup.next_done(*, cancel_remaining=False)
+.. asyncmethod:: TaskGroup.next_done()
 
    Returns the next completed task.  Returns ``None`` if no more tasks remain.
-   A ``TaskGroup`` may also be used as an asynchronous iterator. If the
-   *cancel_remaining* option is given, all remaining tasks are cancelled.
+   A ``TaskGroup`` may also be used as an asynchronous iterator. 
+
+.. asyncmethod:: TaskGroup.next_result()
+
+   Returns the result of the next completed task.  If the task failed with an
+   exception, that exception is raised.  A ``RuntimeError`` exception is raised
+   if this is called when no remaining tasks are available. 
 
 .. asyncmethod:: TaskGroup.join(*, wait=all)
 
-   Wait for tasks in the group to terminate.  If *wait* is `all`, then
-   wait for all tasks to completee.  If *wait* is `any` then wait for
-   any task to complete and cancel any remaining tasks. 
-   If any task returns with an error, then all remaining tasks are
-   immediately cancelled and a ``TaskGroupError`` exception is raised.
-   If the ``join()`` operation itself is cancelled, all remaining
-   tasks in the group are also cancelled.  If a ``TaskGroup`` is used
-   as a context manager, the ``join()`` method is called on
-   context-exit.
+   Wait for tasks in the group to terminate.  If *wait* is ``all``, then
+   wait for all tasks to completee.  If *wait* is ``any`` then wait for
+   any task to terminate and cancel any remaining tasks.  If *wait* is
+   ``object``, then wait for any task to terminate and return a non-None
+   object, cancelling all remaining tasks afterwards.  If any task
+   returns with an error, then all remaining tasks are immediately
+   cancelled and a ``TaskGroupError`` exception is raised.  If the
+   ``join()`` operation itself is cancelled, all remaining tasks in
+   the group are also cancelled.  If a ``TaskGroup`` is used as a
+   context manager, the ``join()`` method is called on context-exit.
 
 .. asyncmethod:: TaskGroup.cancel_remaining()
 
@@ -267,8 +273,9 @@ The following methods are supported on ``TaskGroup`` instances:
 
 .. attribute:: TaskGroup.completed
 
-   The first task that completed in the group.  Useful when used in
-   combination with the ``wait=any`` option on ``join()``.   
+   The first task that completed with a result in the group.  Useful
+   when used in combination with the ``wait=any`` or ``wait=object`` options on
+   ``join()``.
 
 
 The preferred way to use a ``TaskGroup`` is as a context manager.  For
@@ -295,7 +302,7 @@ order that they complete::
         async for task in g:
             print(task, 'completed.', task.result)
 
-If you wanted to launch tasks and exit when the first one has finished,
+If you wanted to launch tasks and exit when the first one has returned a result,
 use the ``wait=any`` option like this::
 
     async with TaskGroup(wait=any) as g:
@@ -415,6 +422,12 @@ functions can be used for this purpose:
    a ``curio.UncaughtTimeoutError`` is raised in the outer
    timeout.
 
+.. asyncfunction:: timeout_at(deadline, corofunc=None, *args)
+
+   The same as :func:`timeout_after` except that the deadline time is
+   given as an absolute clock time.  Use the :func:`clock` function to
+   get a base time for computing a deadline.
+
 .. asyncfunction:: ignore_after(seconds, corofunc=None, *args, timeout_result=None)
 
    Execute the specified coroutine and return its result. Issue a
@@ -430,6 +443,11 @@ functions can be used for this purpose:
    operations.  ``curio.TimeoutCancellationError`` and
    ``curio.UncaughtTimeoutError`` exceptions might be raised
    according to the same rules as for :func:`timeout_after`.
+
+.. asyncfunction:: ignore_at(deadline, corofunc=None, *args)
+
+   The same as :func:`ignore_after` except that the deadline time is
+   given as an absolute clock time. 
 
 Here is an example that shows how these functions can be used::
 
@@ -545,7 +563,10 @@ calculations and blocking operations.  Use the following functions to do that:
    Run ``callable(*args)`` in a separate process and returns
    the result.  If cancelled, the underlying
    worker process (if started) is immediately cancelled by a ``SIGTERM``
-   signal.
+   signal.  It is important to note that the given callable is executed
+   in an entirely independent Python interpreter and that no shared
+   global state should be assumed.  The separate process is launched
+   using the "spawn" method of the ``multiprocessing`` module. 
 
 .. asyncfunction:: run_in_thread(callable, *args)
 
@@ -2513,6 +2534,10 @@ stack traceback of any given task.  For example::
     t = await spawn(coro)
     ...
     print(t.traceback())
+
+Instead of a full traceback, you can also get the current filename and line number::
+
+    filename, lineno = await t.where()
 
 To find out more detailed information about what the kernel is doing, you can 
 supply one or more debugging modules to the ``run()`` function.  To trace

@@ -170,7 +170,7 @@ You can also define an asynchronous iterator::
         def __init__(self, start):
             self.start = start
 
-        async def __aiter__(self):
+        def __aiter__(self):
             return AsyncCountdownIter(self.start)
 
     class AsyncCountdownIter(object):
@@ -181,7 +181,7 @@ You can also define an asynchronous iterator::
             self.n -= 1
             if self.n <= 0:
                 raise StopAsyncIteration
-            return self.n
+            return self.n + 1
 
     async def main():
         async for n in AsyncCountdown(5):
@@ -1306,7 +1306,7 @@ continues to loop forever.  Not so--when the ``timeout_after()``
 operation in ``parent()`` expires, a ``TimeoutCancellationError`` is
 raised in ``child()`` instead.  This causes the loop to stop.
 
-There are are still some ways that timeouts can go wrong and you'll
+There are still some ways that timeouts can go wrong and you'll
 find yourself battling a sky full of swooping manta rays.  The best
 way to make your head explode is to catch ``TaskTimeout`` exceptions
 in code that doesn't use ``timeout_after()``.  For example::
@@ -1758,22 +1758,33 @@ example::
             for task in e:
                 print(task, e)  
 
-If a taskgroup is cancelled while waiting, all tasks in the group are
+If a task group is cancelled while waiting, all tasks in the group are
 also cancelled. 
 
-Sometimes you might want to launch a task where the result is discarded.
-To do that, use the ``ignore_result`` option to ``spawn()`` like this::
+Sometimes you might want to launch long-running tasks into a group,
+not knowing when they will finish.  This commonly occurs in server
+code.  One way to manage this is to launch the server into its own
+task under the group and then reap child tasks one at a time as they
+complete. For example::
+
+    async def client(conn):
+        ...
+
+    async def server(group):
+        while True:
+            conn = await get_next_connection()
+            await group.spawn(client, conn)
 
     async def main():
         async with TaskGroup() as g:
-            await g.spawn(sometask, ignore_result=True)
-            ...
+            await g.spawn(server, g)
+            async for task in g:
+                 # task is a completed task. Could look at it or ignore it
+                 pass
 
-When this is used, the task is still managed by the group in the usual
-way with respect to waiting and cancellation.  However, the final result
-of the task is never inspected--even if the task aborts with an error.
-This option is useful in contexts when a task group might be long-lived,
-such as use in a server. 
+This might look a bit unusual, but it will keep the group from filling up
+with dead tasks and it still allows cancellation to kill everything in
+the group if you want.
 
 Getting a Task Self-Reference
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1835,7 +1846,7 @@ Programming with Threads
 
 Asynchronous I/O is often viewed as an alternative to thread
 programming (e.g., Threads Bad!).  However, it's really not an
-either-or question.  Threads are still useful for a variety of of
+either-or question.  Threads are still useful for a variety of
 things.  In this section, we look at some strategies for programming
 and interacting with threads in Curio.
 
@@ -2345,7 +2356,7 @@ In the event of a timeout, the ``q.get()`` operation will abort, but
 no queue data is lost.  Should an item be made available, the next
 ``q.get()`` operation will return it.  This is different than
 performing get operations on a standard thread-queue.  For example, if
-you you used ``run_in_thread(q.get)`` to get an item on a standard
+you used ``run_in_thread(q.get)`` to get an item on a standard
 thread queue, a timeout or cancellation actually causes a queue item
 to be lost.
 

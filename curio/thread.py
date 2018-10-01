@@ -13,10 +13,14 @@ from inspect import iscoroutine, isgenerator
 from contextlib import contextmanager
 from types import coroutine
 import sys
+import logging
+
+log = logging.getLogger(__name__)
 
 # -- Curio
 
 from . import sync
+from . import queue
 from .task import spawn, disable_cancellation, check_cancellation, set_cancellation, current_task
 from .traps import _future_wait, _scheduler_wait, _scheduler_wake
 from . import errors
@@ -26,6 +30,22 @@ from . import meta
 
 _locals = threading.local()
 
+# Class that allows functions to be registered to thread-exit.
+# Note: This requires at most only one reference to be held in _locals above
+class ThreadAtExit(object):
+    def __init__(self):
+        self.callables = []
+
+    def atexit(self, callable):
+        self.callables.append(callable)
+
+    def __del__(self):
+        for func in self.callables:
+            try:
+                func()
+            except Exception as e:
+                log.warning('Exception in thread_exit handler ignored', exc_info=e)
+
 class AsyncThread(object):
 
     def __init__(self, target, args=(), kwargs={}, daemon=False):
@@ -33,14 +53,17 @@ class AsyncThread(object):
         self.args = args
         self.kwargs = kwargs
         self.daemon = daemon
+        self.terminated = False
+        self.cancelled = False
+        self._taskgroup = None
 
         self._request = Future()
         self._done_evt = threading.Event()
         self._terminate_evt = sync.UniversalEvent()
 
         self._coro = None
-        self._result_value = None
-        self._result_exc = None
+        self.next_value = None
+        self.next_exc = None
         self._thread = None
         self._task = None
         self._joined = False
@@ -58,34 +81,42 @@ class AsyncThread(object):
 
             # Run the the coroutine
             try:
-                self._result_value = await coro
-                self._result_exc = None
-
+                self.next_value = await coro
+                self.next_exc = None
             except BaseException as e:
-                self._result_value = None
-                self._result_exc = e
+                self.next_value = None
+                self.next_exc = e
 
             # Hand it back to the thread
             coro = None
             self._done_evt.set()
 
-        await self._terminate_evt.set()
+        if self._taskgroup:
+            await self._taskgroup._task_done(self)
+            self._joined = True
+
+        #await self._terminate_evt.set()
         
 
     def _func_runner(self):
         _locals.thread = self
+        _locals.thread_exit = ThreadAtExit()
         try:
-            self._result_value = self.target(*self.args, **self.kwargs)
-            self._result_exc = None
+            self.next_value = self.target(*self.args, **self.kwargs)
+            self.next_exc = None
         except BaseException as e:
-            self._result_value = None
-            self._result_exc = e
+            self.next_value = None
+            self.next_exc = e
+            if not isinstance(e, errors.CancelledError):
+                log.warning("Unexpected exception in cancelled async thread", exc_info=True)
+                
         finally:
             self._request.set_result(None)
+            self._terminate_evt.set()
 
     async def start(self):
         self._task = await spawn(self._coro_runner, daemon=True)
-        self._thread = threading.Thread(target=self._func_runner, daemon=True)
+        self._thread = threading.Thread(target=self._func_runner) # , daemon=True)
         self._thread.start()
 
     def AWAIT(self, coro):
@@ -93,34 +124,42 @@ class AsyncThread(object):
         self._done_evt.wait()
         self._done_evt.clear()
 
-        if self._result_exc:
-            raise self._result_exc
+        if self.next_exc:
+            raise self.next_exc
         else:
-            return self._result_value
+            return self.next_value
 
     async def join(self):
-        await self._terminate_evt.wait()
-        if self._result_exc:
-            raise errors.TaskError() from self._result_exc
+        await self.wait()
+        self._joined = True
+
+        if self._taskgroup:
+            self._taskgroup._task_discard(self)
+
+        if self.next_exc:
+            raise errors.TaskError() from self.next_exc
         else:
-            return self._result_value
+            return self.next_value
 
     async def wait(self):
         await self._terminate_evt.wait()
-        self._joined = True
+        self.terminated = True
 
     @property
     def result(self):
-        if not self._terminated_evt.is_set():
+        if not self._terminate_evt.is_set():
             raise RuntimeError('Thread not terminated')
-        if self._result_exc:
-            raise self._result_exc
+        if self.next_exc:
+            raise self.next_exc
         else:
-            return self._result_value
+            return self.next_value
 
-    async def cancel(self, *, exc=errors.TaskCancelled):
-        await self._task.cancel(exc=exc)
-        await self.wait()
+    async def cancel(self, *, exc=errors.TaskCancelled, blocking=True):
+        self.cancelled = True
+        await self._task.cancel(exc=exc, blocking=blocking)
+        if blocking:
+            await self.wait()
+
 
 def AWAIT(coro, *args, **kwargs):
     '''
@@ -142,9 +181,13 @@ def AWAIT(coro, *args, **kwargs):
         if hasattr(_locals, 'thread'):
             return _locals.thread.AWAIT(coro)
         else:
+            # Thought: Do we try to promote the calling thread into an "async" thread automatically?
+            # Would require a running kernel. Would require a task dedicated to spawning the coro
+            # runner.   Would require shutdown.  Maybe a context manager?
             raise errors.AsyncOnlyError('Must be used as async')
     else:
         return coro
+
 
 
 def _check_async_thread_block(code, offset, _cache={}):
@@ -308,10 +351,10 @@ def async_thread(func=None, *, daemon=False):
                 except errors.CancelledError as e:
                     await t.cancel(exc=e)
                     await set_cancellation(t._task.cancel_pending)
-                    if t._result_exc:
-                        raise t._result_exc from None
+                    if t.next_exc:
+                        raise t.next_exc from None
                     else:
-                        return t._result_value
+                        return t.next_value
                 except errors.TaskError as e:
                     raise e.__cause__ from None
             return runner(*args, **kwargs)
@@ -326,173 +369,70 @@ def is_async_thread():
     '''
     return hasattr(_locals, 'thread')
 
-class ThreadProxy(object):
+# Experimental.  Functions that allow an already existing thread to start communicating
+# with Curio as if it were an AsyncThread.  The main requirements of this is that
+# Curio already needs to be running somewhere. A support task (_coro_runner) needs to
+# be running in Curio to respond to requests from the thread and handle them. 
+
+_request_queue = None
+
+def TAWAIT(coro, *args, **kwargs):
     '''
-    Wrapper around an instance that turns all of its methods into async
-    methods
+    Ensure that the caller is an async thread (promoting if necessary),
+    then await for a coroutine
     '''
-    def __init__(self, obj):
-        self._obj = obj
+    if not is_async_thread():
+        enable_async()
+    return AWAIT(coro, *args, **kwargs)
 
-    def __getattr__(self, name):
-        value = getattr(self._obj, name)
-        if callable(value):
-            return async_thread(value)
-        else:
-            return value
+def thread_atexit(callable):
+    _locals.thread_exit.atexit(callable)
 
-# Highly experimental.   These classes allow synchronous code running in an
-# async thread to manipulate an async socket as if it were a normal socket.
-# Seriously, don't use these.  It's something I'm fooling around with right now.
-# -Dave
-
-class ThreadSocket(object):
+def enable_async():
     '''
-    You were warned.
+    Enable asynchronous operations in an existing thread.  This only
+    shuts down once the thread exits.
     '''
-    def __init__(self, asyncsock):
-        self._asyncsock = asyncsock
+    if hasattr(_locals, 'thread'):
+        return
 
-    def __getattr__(self, name):
-        return getattr(self._asyncsock, name)
+    if _request_queue is None:
+        raise RuntimeError('Curio: enable_threads not used')
 
-    def dup(self):
-        raise RuntimeError()
+    fut = Future()
+    _request_queue.put(('start', threading.current_thread(), fut))
+    _locals.thread = fut.result()
+    _locals.thread_exit = ThreadAtExit()
+    
+    def shutdown(thread=_locals.thread, rq=_request_queue):
+        fut = Future()
+        rq.put(('stop', thread, fut))
+        fut.result()
+    _locals.thread_exit.atexit(shutdown)
 
-    def makefile(self, mode, buffering=0, *, encoding=None, errors=None, newline=None):
-        return ThreadFile(self._asyncsock.makefile(mode, buffering, encoding=encoding, errors=errors, newline=newline))
-
-    def settimeout(self, *args):
-        pass
-
-    def as_stream(self):
-        return ThreadFile(self._asyncsock.as_stream())
-
-    def recv(self, maxsize, flags=0):
-        return AWAIT(self._asyncsock.recv(maxsize, flags))
-
-    def recv_into(self, buffer, nbytes=0, flags=0):
-        return AWAIT(self._asyncsock.recv_into(buffer, nbytes, flags))
-
-    def send(self, data, flags=0):
-        return AWAIT(self._asyncsock.send(data, flags))
-
-    def sendall(self, data, flags=0):
-        return AWAIT(self._asyncsock.sendall(data, flags))
-
-    def accept(self):
-        client, addr = AWAIT(self._asyncsock.accept())
-        return (type(self)(client), addr)
-
-    def connect_ex(self, address):
-        return AWAIT(self._asyncsock.connect_ex(address))
-
-    def connect(self, address):
-        return AWAIT(self._asyncsock.connect(address))
-
-    def recvfrom(self, buffersize, flags=0):
-        return AWAIT(self._asyncsock.recvfrom(buffersize, flags))
-
-    def recvfrom_into(self, buffer, bytes=0, flags=0):
-        return AWAIT(self._asyncsock.recvfrom_into(buffer, bytes, flags))
-
-    def sendto(self, bytes, flags_or_address, address=None):
-        return AWAIT(self._asyncsock.sendto(bytes, flags_or_address, address))
-
-    def recvmsg(self, bufsize, ancbufsize=0, flags=0):
-        return AWAIT(self._asyncsock.recvmsg(bufsize, ancbufsize,flags))
-
-    def recvmsg_into(self, buffers, ancbufsize=0, flags=0):
-        return AWAIT(self._asyncsock.recvmsg_into(buffers, ancbufsize, flags))
-
-    def sendmsg(self, buffers, ancdata=(), flags=0, address=None):
-        return AWAIT(self._asyncsock.sendmsg(buffers, ancdata, flags, address))
-
-    def do_handshake(self):
-        return AWAIT(self._asyncsock.do_handshake())
-
-    def close(self):
-        return AWAIT(self._asyncsock.close())
-
-    def shutdown(self, how):
-        return AWAIT(self._asyncsock.shutdown(how))
-
-    def __enter__(self):
-        return self._asyncsock.__enter__()
-
-    def __exit__(self, *args):
-        return self._asyncsock.__exit__(*args)
-
-
-class ThreadFile(object):
+async def thread_handler():
     '''
-    You were repeatedly warned.
+    Special handler function that allows Curio to respond to
+    threads that want to access async functions.   This handler
+    must be spawned manually in code that wants to allow normal
+    threads to promote to Curio async threads.
     '''
-    def __init__(self, asyncfileobj):
-        self._asyncfile = asyncfileobj
-
-    def write(self, data):
-        return AWAIT(self._asyncfile.write(data))
-
-    # ---- General I/O methods for streams
-    def read(self, maxbytes=-1):
-        return AWAIT(self._asyncfile.read(maxbytes))
-
-    def readall(self):
-        return AWAIT(self._asyncfile.readall())
-
-    def read_exactly(self, nbytes):
-        return AWAIT(self._asyncfile.read_exactly(nbytes))
-
-    def readinto(self, buf):
-        return AWAIT(self._asyncfile.readinto(buf))
-
-    def readline(self, maxbytes=-1):
-        return AWAIT(self._asyncfile.readline())
-
-    def readlines(self):
-        return AWAIT(self._asyncfile.readlines())
-
-    def writelines(self, lines):
-        return AWAIT(self._asyncfile.writelines(lines))
-
-    def flush(self):
-        return AWAIT(self._asyncfile.flush())
-
-    def close(self):
-        return AWAIT(self._asyncfile.close())
-
-    def __iter__(self):
-        return self._asyncfile.__iter__()
-
-    def __enter__(self):
-        return self._asyncfile.__enter__()
-
-    def __exit__(self, *args):
-        return self._asyncfile.__exit__(*args)
-
-
-@contextmanager
-def more_magic():
-    '''
-    A vantage point from where you can see "highly experimental" down below if you squint.
-    '''
-    from socket import socket as socketcls
-    socketcls_new = socketcls.__new__
-
-    # Patch socket.socket()
-    def __new__(cls, *args, **kwargs):
-        sock = socketcls_new(cls, *args, **kwargs)
-        if not is_async_thread():
-            return sock
-
-        sock.__init__(*args, **kwargs)
-        self = ThreadSocket(io.Socket(sock))
-        return self
-    socketcls.__new__ = __new__
+    global _request_queue
+    assert _request_queue is None, "thread_handler already running"
+    _request_queue = queue.UniversalQueue()
 
     try:
-        yield
+        while True:
+            request, thr, fut = await _request_queue.get()
+            if request == 'start':
+                athread = AsyncThread(None)
+                athread._task = await spawn(athread._coro_runner, daemon=True)
+                athread._thread = thr
+                fut.set_result(athread)
+            elif request == 'stop':
+                thr._request.set_result(None)
+                await thr._task.join()
+                fut.set_result(None)
     finally:
-        socketcls.__new__ = socketcls_new
+        _request_queue = None
     
