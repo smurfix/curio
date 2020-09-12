@@ -5,6 +5,7 @@ from curio import subprocess
 from curio import *
 import os
 import pytest
+import sys
 
 # ---- Test subprocesses and worker task related functions
 
@@ -15,15 +16,13 @@ dirname = os.path.dirname(__file__)
 def test_simple(kernel):
     results = []
     async def subproc():
-        # out = await subprocess.run([executable, '-m', 'curio.test.slow'],
-        # stdout=subprocess.PIPE)
         out = await subprocess.run([executable, os.path.join(dirname, 'child.py')], stdout=subprocess.PIPE)
         results.append(out.stdout)
         results.append(out.returncode)
 
     kernel.run(subproc())
     assert results == [
-        b't-minus 4\nt-minus 3\nt-minus 2\nt-minus 1\n',
+        b't-minus 4\nt-minus 3\nt-minus 2\nt-minus 1\n'.replace(b'\n', os.linesep.encode('latin-1')),
         0,
     ]
 
@@ -31,13 +30,12 @@ def test_simple(kernel):
 def test_simple_check_output(kernel):
     results = []
     async def subproc():
-        #        out = await subprocess.check_output([executable, '-m', 'curio.test.slow'])
         out = await subprocess.check_output([executable, os.path.join(dirname, 'child.py')])
         results.append(out)
 
     kernel.run(subproc())
     assert results == [
-        b't-minus 4\nt-minus 3\nt-minus 2\nt-minus 1\n',
+        b't-minus 4\nt-minus 3\nt-minus 2\nt-minus 1\n'.replace(b'\n', os.linesep.encode('latin-1')),
     ]
 
 
@@ -80,7 +78,10 @@ def test_timeout(kernel):
             results.append(e.stderr)
 
     kernel.run(subproc())
-    assert results == ['timeout', b't-minus 4\n', b'']
+    if sys.platform.startswith('win'):
+        assert results == ['timeout', b'', b'']
+    else:
+        assert results == ['timeout', b't-minus 4\n', b'']
 
 def test_universal():
     with pytest.raises(RuntimeError):
@@ -91,7 +92,7 @@ def test_stdin_pipe(kernel):
          p1 = subprocess.Popen([executable, os.path.join(dirname, 'child.py')], stdout=subprocess.PIPE)
          p2 = subprocess.Popen([executable, os.path.join(dirname, 'ichild.py')], stdin=p1.stdout, stdout=subprocess.PIPE)
          out = await p2.stdout.read()
-         assert out == b'4\n'
+         assert out == b'4\n'.replace(b'\n', os.linesep.encode('latin-1'))
 
     kernel.run(main())
 
@@ -99,7 +100,7 @@ def test_check_output_stdin(kernel):
     async def main():
          out = await subprocess.check_output([executable, os.path.join(dirname, 'ichild.py')],
                                              input=b'Line1\nLine2\nLine3\n')
-         assert out == b'3\n'
+         assert out == b'3\n'.replace(b'\n', os.linesep.encode('latin-1'))
 
     kernel.run(main())
 
@@ -118,7 +119,7 @@ def test_no_input_cancel(kernel):
         t = await spawn(child)
         await sleep(0.1)
         await t.cancel()
-        
+
     kernel.run(main())
 
 def test_popen_join(kernel):
@@ -138,4 +139,4 @@ def test_io_error(kernel):
     kernel.run(main)
 
 
-         
+

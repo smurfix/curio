@@ -19,11 +19,23 @@ def test_read(kernel):
     kernel.run(main())
 
 
+def test_readall(kernel):
+    async def main():
+        async with aopen(testinput, 'r') as f:
+            data = await f.readall()
+            assert f.closed == False
+        assert data == 'line 1\nline 2\nline 3\n'
+
+    kernel.run(main())
+
+
 def test_read1(kernel):
     async def main():
         async with aopen(testinput, 'rb') as f:
             data = await f.read1(1000)
-        assert data == b'line 1\nline 2\nline 3\n'
+        with open(testinput, 'rb') as f:
+            data2 = f.read1(1000)
+        assert data == data2
 
     kernel.run(main())
 
@@ -33,7 +45,12 @@ def test_readinto(kernel):
         async with aopen(testinput, 'rb') as f:
             buf = bytearray(1000)
             n = await f.readinto(buf)
-        assert buf[:n] == b'line 1\nline 2\nline 3\n'
+
+        with open(testinput, 'rb') as f:
+            buf2 = bytearray(1000)
+            n2 = f.readinto(buf2)
+
+        assert buf[:n] == buf2[:n2]
 
     kernel.run(main())
 
@@ -43,7 +60,10 @@ def test_readinto1(kernel):
         async with aopen(testinput, 'rb') as f:
             buf = bytearray(1000)
             n = await f.readinto1(buf)
-        assert buf[:n] == b'line 1\nline 2\nline 3\n'
+        with open(testinput, 'rb') as f:
+            buf2 = bytearray(1000)
+            n2 = f.readinto1(buf2)
+        assert buf[:n] == buf2[:n]
 
     kernel.run(main())
 
@@ -120,9 +140,9 @@ def test_bad_usage(kernel):
 wlines = ['line1\n', 'line2\n', 'line3\n']
 
 
-def test_write(kernel):
+def test_write(kernel, tmpdir):
     async def main():
-        outname = os.path.join(dirname, 'tmp.txt')
+        outname = tmpdir.join('tmp.txt')
         async with aopen(outname, 'w') as f:
             outdata = ''.join(wlines)
             await f.write(outdata)
@@ -133,9 +153,9 @@ def test_write(kernel):
     kernel.run(main())
 
 
-def test_writelines(kernel):
+def test_writelines(kernel, tmpdir):
     async def main():
-        outname = os.path.join(dirname, 'tmp.txt')
+        outname = tmpdir.join('tmp.txt')
         async with aopen(outname, 'w') as f:
             await f.writelines(wlines)
 
@@ -152,13 +172,19 @@ def test_seek_tell(kernel):
             assert n == 10
             data = await f.read()
 
-        assert data == b'line 1\nline 2\nline 3\n'[10:]
+        with open(testinput, 'rb') as f:
+            f.seek(10)
+            n2 = f.tell()
+            assert n2 == 10
+            data2 = f.read()
+
+        assert data == data2
 
     kernel.run(main())
 
-def test_truncate(kernel):
+def test_truncate(kernel, tmpdir):
     async def main():
-        outname = os.path.join(dirname, 'tmp.txt')
+        outname = tmpdir.join('tmp.txt')
         async with aopen(outname, 'wb') as f:
             await f.write(b'12345')
             await f.flush()

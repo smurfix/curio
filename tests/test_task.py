@@ -3,6 +3,8 @@ import sys
 import time
 import pytest
 from curio import *
+import sys
+
 
 def test_cancel_noblock(kernel):
     cancelled = False
@@ -26,29 +28,54 @@ def test_cancel_noblock(kernel):
     kernel.run(main)
     assert child_exit
 
-def test_task_schedule(kernel):
-    n = 0
+
+def test_cancel_custom_exception(kernel):
+    cancelled = False
+    child_exit = False
+
+    class MyException(Exception):
+        pass
+
     async def child():
-        nonlocal n
-        assert n == 1
-        n += 1
-        await schedule()
-        assert n == 3
-        n += 1
-        await schedule()
+        nonlocal child_exit
+        try:
+            await sleep(10)
+        except MyException:
+            child_exit = True
+            return
+        child_exit = False
 
-    async def parent():
-        nonlocal n
+    async def main():
         t = await spawn(child)
-        assert n == 0
-        n += 1
-        await schedule()
-        assert n == 2
-        n += 1
-        await schedule()
-        assert n == 4
+        await t.cancel(exc=MyException)
 
-    kernel.run(parent)
+    kernel.run(main)
+    assert child_exit
+
+def test_cancel_custom_exception_instance(kernel):
+    cancelled = False
+    child_exit = False
+
+    class MyException(Exception):
+        pass
+
+    exc = MyException("Test")
+
+    async def child():
+        nonlocal child_exit
+        try:
+            await sleep(10)
+        except MyException as e:
+            child_exit = e is exc
+            return
+        child_exit = False
+
+    async def main():
+        t = await spawn(child)
+        await t.cancel(exc=exc)
+
+    kernel.run(main)
+    assert child_exit
 
 def test_task_group(kernel):
     async def child(x, y):
@@ -63,6 +90,26 @@ def test_task_group(kernel):
         assert t1.result == 2
         assert t2.result == 4
         assert t3.result == 6
+        assert g.results == [2, 4, 6]
+
+
+    kernel.run(main())
+
+
+def test_task_group_daemon(kernel):
+    async def child(x, y):
+        return x + y
+
+    async def main():
+        async with TaskGroup(wait=all) as g:
+            t1 = await g.spawn(child, 1, 1)
+            t2 = await g.spawn(child, 2, 2, daemon=True)
+            t3 = await g.spawn(child, 3, "3", daemon=True)
+            t4 = await g.spawn(sleep, 0.5, daemon=True)
+
+        assert t1.result == 2
+        assert g.results == [2]
+
 
     kernel.run(main())
 
@@ -91,6 +138,7 @@ def test_task_group_existing(kernel):
         assert t2.result == 4
         assert t3.result == 6
         assert t4.result == 8
+        assert g.results == [2,4,6,8]
 
     kernel.run(main())
 
@@ -127,17 +175,23 @@ def test_task_any_error(kernel):
         return x + y
 
     async def main():
+        async with TaskGroup(wait=any) as g:
+            t1 = await g.spawn(child, 1, '1')
+            t2 = await g.spawn(child2, 2, 2)
+            t3 = await g.spawn(child2, 3, 3)
         try:
-            async with TaskGroup(wait=any) as g:
-                t1 = await g.spawn(child, 1, '1')
-                t2 = await g.spawn(child2, 2, 2)
-                t3 = await g.spawn(child2, 3, 3)
-        except TaskGroupError as e:
-            assert e.failed == [t1]
+            result = g.result
+            assert False
+        except TypeError:
+            assert True
         else:
             assert False
+
+        assert isinstance(g.exception, TypeError)
+        assert t1.exception
         assert t2.cancelled
         assert t3.cancelled
+        assert all(g.exceptions)
 
     kernel.run(main())
 
@@ -156,6 +210,37 @@ def test_task_group_iter(kernel):
                 results.add(task.result)
 
         assert results == { 2, 4, 6 }
+        assert g.results == []    # Explicit collection of results prevents collections on the group
+
+    kernel.run(main())
+
+
+def test_task_wait_none(kernel):
+    evt = Event()
+    async def child2(x, y):
+        await evt.wait()
+        return x + y
+
+    async def main():
+        async with TaskGroup(wait=None) as g:
+            t2 = await g.spawn(child2, 2, 2)
+            t3 = await g.spawn(child2, 3, 3)
+        assert t2.cancelled
+        assert t3.cancelled
+
+    kernel.run(main())
+
+def test_task_join_daemon(kernel):
+    async def child(x, y):
+        await sleep(0.1)
+        return x + y
+
+    async def main():
+        async with TaskGroup(wait=all) as g:
+            t2 = await g.spawn(child, 2, 2, daemon=True)
+            t3 = await g.spawn(child, 3, 3)
+            r = await t2.join()
+        assert g.results == [6]
 
     kernel.run(main())
 
@@ -167,16 +252,13 @@ def test_task_group_error(kernel):
         await evt.wait()
 
     async def main():
-        try:
-            async with TaskGroup() as g:
-                t1 = await g.spawn(child, 1, 1)
-                t2 = await g.spawn(child, 2, 2)
-                t3 = await g.spawn(child, 3, 'bad')
-        except TaskGroupError as e:
-            assert TypeError in e.errors
-            assert e.failed == [t3]
-        else:
-            assert False
+        async with TaskGroup() as g:
+            t1 = await g.spawn(child, 1, 1)
+            t2 = await g.spawn(child, 2, 2)
+            t3 = await g.spawn(child, 3, 'bad')
+
+        assert isinstance(t3.exception, TypeError)
+        assert g.completed == t3
         assert t1.cancelled
         assert t2.cancelled
 
@@ -226,8 +308,9 @@ def test_task_group_join(kernel):
                 with pytest.raises(TypeError):
                     t1.result
             else:
-                assert Fail
+                assert False
 
+            # These assert that the error has not cancelled other tasks
             with pytest.raises(RuntimeError):
                 t2.result
 
@@ -236,33 +319,11 @@ def test_task_group_join(kernel):
 
             await evt.set()
 
+        # Assert that other tasks ran to completion
         assert not t2.cancelled
         assert not t3.cancelled
+        assert g.results == [4, 6]
 
-    kernel.run(main())
-
-def test_task_group_multierror(kernel):
-    evt = Event()
-    async def child(exctype):
-        if exctype:
-            raise exctype('Died')
-        await evt.wait()
-
-    async def main():
-        try:
-            async with TaskGroup() as g:
-                t1 = await g.spawn(child, RuntimeError)
-                t2 = await g.spawn(child, ValueError)
-                t3 = await g.spawn(child, None)
-                await schedule()
-                await evt.set()
-        except TaskGroupError as e:
-            assert e.errors == { RuntimeError, ValueError }
-            assert e.failed == [t1, t2]
-            assert list(e) == [t1, t2]
-            str(e)
-        else:
-            assert False
 
     kernel.run(main())
 
@@ -343,11 +404,14 @@ def test_task_group_cancel_remaining(kernel):
 
     async def main():
         async with TaskGroup() as g:
-            t1 = await g.spawn(child, 1, 1)
+            t0 = await g.spawn(child, 1, 1)
+            t1 = await g.spawn(child, 2, 2)
             t2 = await g.spawn(waiter)
             t3 = await g.spawn(waiter)
             t = await g.next_done()
-            assert t == t1
+            assert t == t0
+            r = await g.next_result()
+            assert r == 4
             await g.cancel_remaining()
 
         assert t2.cancelled
@@ -370,40 +434,23 @@ def test_task_group_use_error(kernel):
              await g.add_task(t2)
          await t2.join()
 
+         with pytest.raises(RuntimeError):
+             await g.spawn_thread(time.sleep, 0)
+
     kernel.run(main())
-             
-def test_enable_cancellation_function(kernel):
-    cancelled = False
-    done = False
 
-    async def child():
-        nonlocal cancelled
-        try:
-            await sleep(1)
-        except CancelledError:
-            cancelled = True
-            raise
-            
-    async def task():
-        nonlocal done
-        async with disable_cancellation():
-            await sleep(1)
-            await enable_cancellation(child())
-            assert True
-
-        with pytest.raises(CancelledError):
-            await sleep(1)
-        done = True
-
+def test_task_group_empty(kernel):
     async def main():
-        t = await spawn(task)
-        await sleep(0.1)
-        await t.cancel()
-      
-    kernel.run(main)
-    assert cancelled
-    assert done
+        async with TaskGroup() as g:
+            pass
 
+        assert g.exception is None
+        assert g.exceptions == []
+        assert g.results == []
+        with pytest.raises(RuntimeError):
+             g.result
+
+    kernel.run(main())
 
 def test_defer_cancellation(kernel):
     async def cancel_me(e1, e2):
@@ -424,6 +471,30 @@ def test_defer_cancellation(kernel):
 
     kernel.run(main)
 
+def test_explicit_raise_cancel_disable(kernel):
+    async def cancel_me(e1, e2):
+        with pytest.raises(CancelledError):
+            async with disable_cancellation():
+                async with disable_cancellation():
+                    await e1.set()
+                    await e2.wait()
+                    raise TaskCancelled()
+                # Even if TaskCancelled is raised explicitly, it should not propagate out.
+                # Instead, it gets defer until cancellation is enabled
+                assert await check_cancellation()
+                assert True
+            await check_cancellation()
+
+    async def main():
+        e1 = Event()
+        e2 = Event()
+        task = await spawn(cancel_me, e1, e2)
+        await e1.wait()
+        await task.cancel(blocking=False)
+        await e2.set()
+        await task.join()
+
+    kernel.run(main)
 
 def test_disable_cancellation_function(kernel):
     async def cancel_it(e1, e2):
@@ -457,17 +528,9 @@ def test_self_cancellation(kernel):
 
     kernel.run(suicidal_task)
 
-def test_illegal_enable_cancellation(kernel):
+def test_disable_cancellation_explicit_raise(kernel):
     async def task():
-        with pytest.raises(RuntimeError):
-             async with enable_cancellation():
-                 pass
-
-    kernel.run(task)
-
-def test_illegal_disable_cancellation_exception(kernel):
-    async def task():
-        with pytest.raises(RuntimeError):
+        with pytest.raises(CancelledError):
              async with disable_cancellation():
                  raise CancelledError()
 
@@ -506,77 +569,135 @@ async def producer(ch):
         await c.send(i)
     await c.send(None)   # Sentinel
 
-def test_aside_basic(kernel):
-    import os
-    os.environ['PYTHONPATH'] = os.path.dirname(__file__)
-    results = [ ]
-
-    async def consumer(ch):
-        c = await ch.connect(authkey=b'peekaboo')
-        while True:
-            msg = await c.recv()
-            if msg is None:
-                break
-            results.append(msg)
-
-    async def main():
-        ch = Channel(('localhost', 30000))
-        t1 = await aside(producer, ch)
-        t2 = await spawn(consumer, ch)
-        await t1.join()
-        await t2.join()
-
-    kernel.run(main)
-    del os.environ['PYTHONPATH']
-    assert results == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-
-
-def test_aside_cancel(kernel):
-    import os
-    os.environ['PYTHONPATH'] = os.path.dirname(__file__)
-    results = [ ]
-
-    async def consumer(ch, t):
-        c = await ch.connect(authkey=b'peekaboo')
-        while True:
-            msg = await c.recv()
-            if msg == 5:
-                await t.cancel()
-                break
-            results.append(msg)
-
-    async def main():
-        ch = Channel(('localhost', 30000))
-        t1 = await aside(producer, ch)
-        t2 = await spawn(consumer, ch, t1)
-        with pytest.raises(TaskError):
-            await t1.join()
-        await t2.join()
-
-    kernel.run(main)
-    del os.environ['PYTHONPATH']
-    assert results == [0, 1, 2, 3, 4]
-
-
-@pytest.mark.skipif(sys.version_info[0:2] < (3, 7), reason="contextvars needs 3.7+")
-def test_contextvars(kernel):
+def test_contextvars():
     import contextvars
-    cvar = contextvars.ContextVar("test")
-
-    async def one():
-        cvar.set("abc")
-        assert cvar.get() == "abc"
-
-    async def two():
-        assert cvar.get(default=None) is None
-        cvar.set("def")
-        assert cvar.get(default=None) == "def"
+    x = contextvars.ContextVar('x', default=0)
+    from curio.task import ContextTask
+    events = []
+    async def countdown(n):
+        x.set(n)
+        while x.get() > 0:
+            events.append(x.get())
+            x.set(x.get() - 1)
+            await sleep(0)
 
     async def main():
-        t1 = await spawn(one)
-        await t1.join()
-        t2 = await spawn(two)
-        await t2.join()
-        assert cvar.get(default="ghi") == "ghi"
+        async with TaskGroup() as g:
+            await g.spawn(countdown, 3)
+            await g.spawn(countdown, 6)
+
+    with Kernel(taskcls=ContextTask) as kernel:
+        kernel.run(main)
+
+    assert events == [3,6,2,5,1,4,3,2,1]
+
+def test_task_group_result(kernel):
+    async def child(x, y):
+        return x + y
+
+    async def main():
+        async with TaskGroup(wait=any) as g:
+            await g.spawn(child, 1, 1)
+            await g.spawn(child, 2, 2)
+            await g.spawn(child, 3, 3)
+
+        assert g.result == 2
+
+    kernel.run(main())
+
+# Smoke test on diagnostic functions (for code coverage)
+def test_task_diag(kernel):
+    async def child():
+        await sleep(0.25)
+
+    async def main():
+        t = await spawn(child)
+        s = str(t)
+        s = t.where()
+        s = t.traceback()
+        del t
+
+    kernel.run(main())
+
+def test_late_join(kernel):
+    async def child():
+        pass
+
+    async def main():
+        t = await spawn(child)
+        await sleep(0.1)
+        await t.cancel()
+        assert t.joined
+        assert t.terminated
+        assert not t.cancelled
 
     kernel.run(main)
+
+
+def test_task_group_join_done(kernel):
+    async def add(x, y):
+        return x + y
+
+    async def task():
+        async with TaskGroup(wait=all) as w:
+            await w.spawn(add, 1, 1)
+            await w.spawn(add, 2, 2)
+            t3 = await w.spawn(add, 3, 3)
+            r3 = await t3.join()
+            assert r3 == 6
+
+        assert w.results == [2, 4]
+
+    kernel.run(task)
+
+def test_errors(kernel):
+    # Test for premature result in task  group
+    async def f():
+        g = TaskGroup()
+        with pytest.raises(RuntimeError):
+            r = g.result
+        with pytest.raises(RuntimeError):
+            e = g.exception
+        with pytest.raises(RuntimeError):
+            r = g.results
+        with pytest.raises(RuntimeError):
+            r = g.exceptions
+
+        with pytest.raises(RuntimeError):
+            r = await g.next_result()
+
+        await g.join()
+
+    kernel.run(f)
+
+def test_diag(kernel):
+    # Test ability to get stack traces from different contexts
+    from curio.task import _get_stack
+
+    # Normal generator
+    def gen(n):
+        yield n
+
+    def gen2(n):
+        yield from gen(n)
+
+    # Async generator
+    async def agen(n):
+        yield (await sleep(0.1))
+
+    g = gen(0)
+    next(g)
+    w = _get_stack(g)
+
+    g = gen2(0)
+    next(g)
+    w = _get_stack(g)
+
+    async def f():
+        a = agen(0)
+        w = _get_stack(a)
+        await a.asend(None)
+
+    g = f()
+    g.send(None)
+    w = _get_stack(g)

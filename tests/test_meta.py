@@ -3,31 +3,7 @@ from curio import *
 from functools import partial
 import pytest
 import sys
-
-def test_blocking(kernel):
-    @meta.blocking
-    def func():
-        return 1
-
-    async def main():
-         r = await func()
-         assert r == 1
-
-    assert func() == 1
-
-    kernel.run(main)
-
-@meta.cpubound
-def cpufunc():
-    return 1
-
-def test_cpubound(kernel):
-    async def main():
-         r = await cpufunc()
-         assert r == 1
-
-    assert cpufunc() == 1
-    kernel.run(main)
+import inspect
 
 def test_iscoroutinefunc():
     async def spam(x, y):
@@ -35,54 +11,25 @@ def test_iscoroutinefunc():
 
     assert meta.iscoroutinefunction(partial(spam, 1))
 
-def test_async_instance(kernel):
+def test_instantiate_coroutine():
+    async def coro(x, y):
+        pass
 
-    class AsyncSpam(meta.AsyncObject):
-        async def __init__(self, x):
-            await sleep(0)
-            self.x = x
+    def func(x, y):
+        pass
 
-    async def main():
-        s = await AsyncSpam(37)
-        assert s.x == 37
-        
-    kernel.run(main)
+    c = meta.instantiate_coroutine(coro(2,3))
+    assert inspect.iscoroutine(c)
 
-def test_bad_async_instance():
+    d = meta.instantiate_coroutine(coro, 2, 3)
+    assert inspect.iscoroutine(d)
 
     with pytest.raises(TypeError):
-        class AsyncSpam(meta.AsyncObject):
-            def __init__(self, x):
-                self.x = x
+        meta.instantiate_coroutine(func(2,3))
 
-
-def test_async_abc():
-    class AsyncSpam(meta.AsyncABC):
-        async def spam(self):
-            pass
-    
     with pytest.raises(TypeError):
-        class Child(AsyncSpam):
-            def spam(self):
-                pass
+        meta.instantiate_coroutine(func, 2, 3)
 
-    class Child2(AsyncSpam):
-        async def spam(self):
-            pass
-
-
-def test_sync_only(kernel):
-    @meta.sync_only
-    def func():
-        return 1
-
-    async def main():
-         with pytest.raises(SyncIOError):
-             r = func()
-
-    assert func() == 1
-
-    kernel.run(main)
 
 def test_bad_awaitable():
     def spam(x, y):
@@ -104,7 +51,7 @@ def test_awaitable_partial(kernel):
         assert y == 2
         assert z == 3
         return True
-        
+
     async def main():
         assert await func(1, 2, 3)
         assert await ignore_after(1, func(1,2,3))
@@ -159,3 +106,26 @@ if sys.version_info >= (3,7):
 
         kernel.run(main)
         assert results == ['coro', 'result', 'cleanup']
+
+
+    def test_missing_asynccontextmanager(kernel):
+        results = []
+        async def manager():
+             try:
+                 yield (await coro())
+             finally:
+                 await cleanup()
+
+        async def coro():
+            results.append('coro')
+            return 'result'
+
+        async def cleanup():
+            results.append('cleanup')
+
+        async def main():
+             async for x in manager():
+                  break
+
+        kernel.run(main)
+        assert results == ['coro']

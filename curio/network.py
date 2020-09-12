@@ -67,7 +67,7 @@ async def open_connection(host, port, *, ssl=None, source_addr=None, server_host
     if server_hostname and not ssl:
         raise ValueError('server_hostname is only applicable with SSL')
 
-    sock = await socket.create_connection((host, port), source_addr)
+    sock = await socket.create_connection((host, port), source_address=source_addr)
 
     try:
         # Apply SSL wrapping to the connection, if applicable
@@ -123,7 +123,7 @@ async def run_server(sock, client_connected_task, ssl=None):
             await tg.spawn(run_server, sock, tg)
             # Reap all of the children tasks as they complete
             async for task in tg:
-                task._joined = True
+                task.joined = True
                 del task
 
 def tcp_server_socket(host, port, family=socket.AF_INET, backlog=100,
@@ -164,7 +164,7 @@ def unix_server_socket(path, backlog=100):
         sock._socket.close()
         raise
     return sock
-    
+
 async def unix_server(path, client_connected_task, *, backlog=100, ssl=None):
     sock = unix_server_socket(path, backlog)
     await run_server(sock, client_connected_task, ssl)

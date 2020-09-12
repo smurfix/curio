@@ -5,8 +5,10 @@ import os
 from curio import *
 from curio.socket import *
 from curio import io
+import pytest
+import sys
 
-def test_tcp_echo(kernel):
+def test_tcp_echo(kernel, portno):
     results = []
     async def server(address):
         sock = socket(AF_INET, SOCK_STREAM)
@@ -48,8 +50,8 @@ def test_tcp_echo(kernel):
 
     async def main():
         async with TaskGroup() as g:
-            await g.spawn(server, ('', 25000))
-            await g.spawn(client, ('localhost', 25000))
+            await g.spawn(server, ('', portno))
+            await g.spawn(client, ('localhost', portno))
 
     kernel.run(main())
 
@@ -70,7 +72,7 @@ def test_tcp_echo(kernel):
     ]
 
 
-def test_tcp_file_echo(kernel):
+def test_tcp_file_echo(kernel, portno):
     results = []
     async def server(address):
         sock = socket(AF_INET, SOCK_STREAM)
@@ -110,8 +112,8 @@ def test_tcp_file_echo(kernel):
 
     async def main():
         async with TaskGroup() as g:
-             await g.spawn(server, ('', 25000))
-             await g.spawn(client, ('localhost', 25000))
+             await g.spawn(server, ('', portno))
+             await g.spawn(client, ('localhost', portno))
 
     kernel.run(main())
 
@@ -169,8 +171,75 @@ def test_udp_echo(kernel):
         'client close'
     ]
 
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason='currently broken')
 
-def test_accept_timeout(kernel):
+def test_fromfd_tcp_echo(kernel, portno):
+    results = []
+    async def server(address):
+        sock = socket(AF_INET, SOCK_STREAM)
+        sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
+        sock.bind(address)
+        sock.listen(5)
+        results.append('accept wait')
+        client, addr = await sock.accept()
+        results.append('accept done')
+        await spawn(handler, client.detach())
+        await sock.close()
+
+    async def handler(fileno):
+        client = fromfd(fileno, AF_INET, SOCK_STREAM)
+        results.append('handler start')
+        while True:
+            results.append('recv wait')
+            data = await client.recv(100)
+            if not data:
+                break
+            results.append(('handler', data))
+            await client.sendall(data)
+        results.append('handler done')
+        await client.close()
+
+    async def client(address):
+        results.append('client start')
+        sock = socket(AF_INET, SOCK_STREAM)
+        await sock.connect(address)
+        await sock.send(b'Msg1')
+        await sleep(0.1)
+        resp = await sock.recv(100)
+        results.append(('client', resp))
+        await sock.send(b'Msg2')
+        await sleep(0.1)
+        resp = await sock.recv(100)
+        results.append(('client', resp))
+        results.append('client close')
+        await sock.close()
+
+    async def main():
+        async with TaskGroup() as g:
+            await g.spawn(server, ('', portno))
+            await g.spawn(client, ('localhost', portno))
+
+    kernel.run(main())
+
+    assert results == [
+        'accept wait',
+        'client start',
+        'accept done',
+        'handler start',
+        'recv wait',
+        ('handler', b'Msg1'),
+        'recv wait',
+        ('client', b'Msg1'),
+        ('handler', b'Msg2'),
+        'recv wait',
+        ('client', b'Msg2'),
+        'client close',
+        'handler done'
+    ]
+
+
+def test_accept_timeout(kernel, portno):
     results = []
     async def server(address):
         sock = socket(AF_INET, SOCK_STREAM)
@@ -185,7 +254,7 @@ def test_accept_timeout(kernel):
             results.append('accept timeout')
         await sock.close()
 
-    kernel.run(server(('', 25000)))
+    kernel.run(server(('', portno)))
 
     assert results == [
         'accept wait',
@@ -193,7 +262,7 @@ def test_accept_timeout(kernel):
     ]
 
 
-def test_accept_cancel(kernel):
+def test_accept_cancel(kernel, portno):
     results = []
     async def server(address):
         sock = socket(AF_INET, SOCK_STREAM)
@@ -209,7 +278,7 @@ def test_accept_cancel(kernel):
         await sock.close()
 
     async def canceller():
-        task = await spawn(server, ('', 25000))
+        task = await spawn(server, ('', portno))
         await sleep(0.5)
         await task.cancel()
 
@@ -434,6 +503,8 @@ def test_buffer_stream_into(kernel):
 
     assert all(n == x for n, x in enumerate(results[0]))
 
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason='broken on Windows')
 def test_buffer_makefile_into(kernel):
     from array import array
     results = []
@@ -494,3 +565,52 @@ def test_read_write_on_same_socket(kernel):
         await t2.join()
 
     kernel.run(main())
+
+def test_create_connection(kernel):
+    evt = Event()
+    async def server(addr):
+        sock = socket(AF_INET, SOCK_STREAM)
+        sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
+        sock.bind(addr)
+        sock.listen(1)
+        await evt.set()
+        client, addr = await sock.accept()
+        assert addr[1] == 25001
+        await client.close()
+        await sock.close()
+
+    async def client(servaddr, clientaddr):
+        await evt.wait()
+        sock = await create_connection(servaddr, source_address=clientaddr)
+        await sock.close()
+
+    async def main():
+        async with TaskGroup() as g:
+            await g.spawn(server, ('', 25000))
+            await sleep(0.1)
+            await g.spawn(client, ('localhost', 25000), ('localhost', 25001))
+        assert not any(g.exceptions)
+
+    kernel.run(main)
+
+def test_create_bad_connection(kernel):
+    async def main():
+        with pytest.raises(OSError):
+            await create_connection(('python.org', 1))
+
+    kernel.run(main)
+
+# Smoke test on various socket functions
+@pytest.mark.skipif(True,
+                    reason='unreliable')
+def test_socket_funcs(kernel):
+    async def main():
+        r = await getaddrinfo('', 80)
+        r = await getfqdn('')
+        r = await gethostbyname('127.0.0.1')
+        r = await gethostbyname_ex('127.0.0.1')
+        r = await gethostname()
+        r = await gethostbyaddr('127.0.0.1')
+        r = await getnameinfo(('127.0.0.1', 80), NI_NUMERICHOST)
+    kernel.run(main)
+

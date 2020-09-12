@@ -4,10 +4,10 @@
 
 __all__ = [
     'CurioError', 'CancelledError', 'TaskTimeout', 'TaskError',
-    'TaskInterrupted', 'TaskGroupError', 'SyncIOError', 'TaskExit',
-    'ResourceBusy', 'ReadResourceBusy',
-    'WriteResourceBusy', 'TimeoutCancellationError',
-    'UncaughtTimeoutError', 'TaskCancelled', 'AsyncOnlyError',
+    'SyncIOError', 'ResourceBusy',
+    'ReadResourceBusy', 'WriteResourceBusy',
+    'TimeoutCancellationError', 'UncaughtTimeoutError',
+    'TaskCancelled', 'AsyncOnlyError',
 ]
 
 
@@ -32,27 +32,13 @@ class TaskCancelled(CancelledError):
 class TimeoutCancellationError(CancelledError):
     '''
     Exception raised if task is being cancelled due to a timeout, but
-    it's not the inner-most timeout in effect. 
+    it's not the inner-most timeout in effect.
     '''
 
 
 class TaskTimeout(CancelledError):
     '''
     Exception raised if task is cancelled due to timeout.
-    '''
-
-
-class TaskInterrupted(CancelledError):
-    '''
-    Raised if the current operation is interrupted for some
-    reason. It's implied that the task would catch this and
-    retry the operation.
-    '''
-
-
-class TaskExit(BaseException):
-    '''
-    Cause a task to terminate immediately.
     '''
 
 
@@ -65,29 +51,11 @@ class UncaughtTimeoutError(CurioError):
 
 class TaskError(CurioError):
     '''
-    Raised if a task launched via spawn() or similar function 
+    Raised if a task launched via spawn() or similar function
     terminated due to an exception.  This is a chained exception.
     The __cause__ attribute contains the actual exception that
     occurred in the task.
     '''
-
-
-class TaskGroupError(CurioError):
-    '''
-    Raised if one or more tasks in a task group raised an error.
-    The .failed attribute contains a list of all tasks that died.
-    The .errors attribute contains a set of all exceptions raised.
-    '''
-    def __init__(self, failed):
-        self.args = (failed,)
-        self.failed = failed
-        self.errors = { type(task.next_exc) for task in failed }
-
-    def __str__(self):
-        return 'TaskGroupError(%s)' % ', '.join(err.__name__ for err in self.errors)
-
-    def __iter__(self):
-        return self.failed.__iter__()
 
 
 class SyncIOError(CurioError):
@@ -99,7 +67,7 @@ class SyncIOError(CurioError):
 
 class AsyncOnlyError(CurioError):
     '''
-    Raised by the AWAIT() function if its applied to code not 
+    Raised by the AWAIT() function if its applied to code not
     properly running in an async-thread.
     '''
 

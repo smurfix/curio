@@ -49,7 +49,7 @@ from functools import partial
 # -- Curio
 
 from .workers import run_in_thread
-from .errors import SyncIOError
+from .errors import SyncIOError, CancelledError
 from . import thread
 
 class AsyncFile(object):
@@ -151,6 +151,22 @@ class AsyncFile(object):
     def __getattr__(self, name):
         return getattr(self._file, name)
 
+    # Compatibility with io.FileStream
+    async def readall(self):
+        chunks = []
+        maxread = 65536
+        sep = '' if hasattr(self._file, 'encoding') else b''
+        while True:
+            try:
+                chunk = await self.read(maxread)
+            except CancelledError as e:
+                e.bytes_read = sep.join(chunks)
+                raise
+            if not chunk:
+                return sep.join(chunks)
+            chunks.append(chunk)
+            if len(chunk) == maxread:
+                maxread *= 2
 
 def aopen(*args, **kwargs):
     '''
