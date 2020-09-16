@@ -4,6 +4,7 @@ from collections import deque
 from curio import *
 import time
 import threading
+import asyncio
 from curio.traps import _read_wait
 
 def test_queue_simple(kernel):
@@ -11,48 +12,6 @@ def test_queue_simple(kernel):
     async def consumer(queue, label):
         while True:
             item = await queue.get()
-            if item is None:
-                break
-            results.append((label, item))
-            await queue.task_done()
-        await queue.task_done()
-        results.append(label + ' done')
-
-    async def producer():
-        queue = Queue()
-        results.append('producer_start')
-        c1 = await spawn(consumer(queue, 'cons1'))
-        c2 = await spawn(consumer(queue, 'cons2'))
-        await sleep(0.1)
-        for n in range(4):
-            await queue.put(n)
-            await sleep(0.1)
-        for n in range(2):
-            await queue.put(None)
-        results.append('producer_join')
-        await queue.join()
-        results.append('producer_done')
-        await c1.join()
-        await c2.join()
-
-    kernel.run(producer())
-
-    assert results == [
-        'producer_start',
-        ('cons1', 0),
-        ('cons2', 1),
-        ('cons1', 2),
-        ('cons2', 3),
-        'producer_join',
-        'cons1 done',
-        'cons2 done',
-        'producer_done',
-    ]
-
-def test_queue_simple_iter(kernel):
-    results = []
-    async def consumer(queue, label):
-        async for item in queue:
             if item is None:
                 break
             results.append((label, item))
@@ -397,7 +356,7 @@ def test_univ_queue_async_sync(kernel):
     kernel.run(main())
 
 def test_univ_queue_cancel(kernel):
-    result = [] 
+    result = []
 
     async def consumer(q):
         while True:
@@ -497,7 +456,7 @@ def test_univ_queue_multiple_kernels(kernel):
         await q.put(None)
         await q.put(None)
         await q.put(None)
-        
+
         t1.join()
         t2.join()
         t3.join()
@@ -535,77 +494,26 @@ def test_univ_queue_withfd(kernel):
         assert result == [0,1,2,3,4,5,6,7,8,9]
 
     kernel.run(main())
-    
 
-def test_uqueue_simple_iter(kernel):
-    async def consumer(queue):
-        results = []
-        async for item in queue:
-            if item is None:
-                break
-            results.append(item)
-        assert results == list(range(10))
-
-    def tconsumer(queue):
-        results = []
-        for item in queue:
-            if item is None:
-                break
-            results.append(item)
-        assert results == list(range(10))
-
-    async def producer():
-        queue = UniversalQueue()
-        t = await spawn(consumer, queue)
-        for n in range(10):
-            await queue.put(n)
-        await queue.put(None)
-        await t.join()
-        t = threading.Thread(target=tconsumer, args=(queue,))
-        t.start()
-        for n in range(10):
-            await queue.put(n)
-        await queue.put(None)
-        await run_in_thread(t.join)
-
-    kernel.run(producer())
-
-
-def test_uqueue_asyncio_iter(kernel):
-    async def consumer(queue):
-        results = []
-        async for item in queue:
-            if item is None:
-                break
-            results.append(item)
-        assert results == list(range(10))
-
-    async def producer():
-        queue = UniversalQueue(maxsize=2)
-        async with AsyncioLoop() as loop:
-            t = await spawn(loop.run_asyncio(consumer, queue))
-            for n in range(10):
-                await queue.put(n)
-            await queue.put(None)
-            await t.join()
-
-    kernel.run(producer())
 
 
 def test_uqueue_asyncio_prod(kernel):
     async def consumer():
         queue = UniversalQueue(maxsize=2)
-        async with AsyncioLoop() as loop:
-            t = await spawn(loop.run_asyncio(producer, queue))
-            results = []
-            async for item in queue:
-                await queue.task_done()
-                if item is None:
-                    break
-                results.append(item)
-            
-            assert results == list(range(10))
-            await t.join()
+        loop = asyncio.new_event_loop()
+        t = threading.Thread(target=loop.run_until_complete, args=(producer(queue),))
+        t.start()
+
+        results = []
+        while True:
+            item = await queue.get()
+            await queue.task_done()
+            if item is None:
+                break
+            results.append(item)
+
+        assert results == list(range(10))
+        t.join()
 
     async def producer(queue):
         for n in range(10):
@@ -614,6 +522,29 @@ def test_uqueue_asyncio_prod(kernel):
         await queue.join()
 
     kernel.run(consumer())
+
+def test_uqueue_asyncio_consumer(kernel):
+    results = []
+    async def consumer(queue):
+        while True:
+            item = await queue.get()
+            await queue.task_done()
+            if item is None:
+                break
+            results.append(item)
+
+    async def producer(queue):
+        for n in range(10):
+            await queue.put(n)
+        await queue.put(None)
+        await queue.join()
+
+    queue = UniversalQueue(maxsize=2)
+    t1 = threading.Thread(target=asyncio.run, args=[consumer(queue)])
+    t1.start()
+    kernel.run(producer, queue)
+    t1.join()
+    assert results == list(range(10))
 
 def test_uqueue_withfd_corner(kernel):
     async def main():
@@ -652,9 +583,9 @@ def test_uqueue_put_cancel(kernel):
 
 
 
-    
 
-    
-    
+
+
+
 
 

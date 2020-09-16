@@ -23,7 +23,7 @@ from . import socket
 from .errors import CurioError, TaskTimeout
 from .io import StreamBase, FileStream
 from . import thread
-from .task import timeout_after, sleep
+from .time import timeout_after, sleep
 
 # Authentication parameters (copied from multiprocessing)
 
@@ -119,22 +119,20 @@ class Connection(object):
             await self._writer.write(msg)
         return size
 
-    async def recv_bytes(self, maxlength=None):
+    async def recv_bytes(self,maxlength=None):
         '''
         Receive a message of bytes as a single message.
         '''
         header = await self._reader.read_exactly(4)
         size, = struct.unpack('!i', header)
-        if maxlength is not None:
-            if size > maxlength:
-                raise IOError('Message too large. %d bytes > %d maxlength' % (size, maxlength))
-
+        if maxlength and size > maxlength:
+            raise IOError("Message too large")
         msg = await self._reader.read_exactly(size)
         return msg
 
     async def recv_bytes_into(self, buf, offset=0):
         '''
-        Receive bytes into a writable memory buffer.  The buffer must be large enough to 
+        Receive bytes into a writable memory buffer.  The buffer must be large enough to
         hold the message.  The number of bytes received in the message is returned.
         '''
         header = await self._reader.read_exactly(4)
@@ -180,7 +178,7 @@ class Connection(object):
 
     async def _answer_challenge(self, authkey):
         message = await self.recv_bytes(maxlength=256)
-        assert message[:len(CHALLENGE)] == CHALLENGE, 'message = %r' % message
+        assert message[:len(CHALLENGE)] == CHALLENGE, f'message = {message!r}'
         message = message[len(CHALLENGE):]
         digest = hmac.new(authkey, message, 'md5').digest()
         await self.send_bytes(digest)
@@ -206,7 +204,7 @@ class Channel(object):
             self.check_address = check_address
 
     def __repr__(self):
-        return 'Channel(%r, %r)' % (self.address, self.family)
+        return f'Channel({self.address!r}, {self.family!r})'
 
     async def __aenter__(self):
         return self
@@ -242,7 +240,7 @@ class Channel(object):
                 await client.close()
                 del client
                 continue
-                
+
             client_stream = client.as_stream()
             c = Connection(client_stream, client_stream)
             c.address = addr
@@ -260,27 +258,22 @@ class Channel(object):
         return c
 
     async def connect(self, *, authkey=None):
-        while True:
-            try:
-                sock = socket.socket(self.family, socket.SOCK_STREAM)
-                await sock.connect(self.address)
-                sock_stream = sock.as_stream()
-                c = Connection(sock_stream, sock_stream)
-                try:
-                    async with timeout_after(1):
-                        if authkey:
-                            await c.authenticate_client(authkey)
-                    return c
-                except TaskTimeout:
-                    log.warning('Channel connection to %s timed out', self.address)
-                    await c.close()
-                    del c
-                    del sock_stream
-
-            except OSError as e:
-                log.error('Channel connection to %s failed', self.address, exc_info=True)
-                await sock.close()
-                await sleep(1)
+        sock = socket.socket(self.family, socket.SOCK_STREAM)
+        await sock.connect(self.address)
+        sock_stream = sock.as_stream()
+        c = Connection(sock_stream, sock_stream)
+        try:
+            async with timeout_after(1):
+                if authkey:
+                    await c.authenticate_client(authkey)
+            return c
+        except TaskTimeout:
+            log.warning('Channel connection to %s timed out', self.address)
+            await c.close()
+            del c
+            del sock_stream
+            # Note: Raising an OSError.
+            raise TimeoutError("Connection timed out")
 
     async def close(self):
         if self.sock:

@@ -11,6 +11,7 @@ __all__ = ['run', 'Popen', 'CompletedProcess', 'CalledProcessError',
 
 import subprocess
 import os
+import sys
 
 from subprocess import (
     CompletedProcess,
@@ -23,11 +24,15 @@ from subprocess import (
 
 # -- Curio
 
-from .task import spawn, sleep
+from .task import spawn
+from .time import sleep
 from .errors import CancelledError
 from .io import FileStream
 from . import thread
 from .workers import run_in_thread
+
+if sys.platform.startswith('win'):
+    from .file import AsyncFile as FileStream
 
 class Popen(object):
     '''
@@ -51,7 +56,8 @@ class Popen(object):
                 # At hell's heart I stab thy coroutine attempting to read from a stream
                 # that's been used as a pipe input to a subprocess.  Must set back to
                 # blocking or all hell breaks loose in the child.
-                os.set_blocking(stdin.fileno(), True)
+                if hasattr(os, 'set_blocking'):
+                    os.set_blocking(stdin.fileno(), True)
 
         self._popen = subprocess.Popen(args, **kwargs)
 
@@ -92,13 +98,13 @@ class Popen(object):
         except CancelledError as err:
             if stdout_task:
                 await stdout_task.cancel()
-                err.stdout = stdout_task.next_exc.bytes_read
+                err.stdout = stdout_task.exception.bytes_read
             else:
                 err.stdout = b''
 
             if stderr_task:
                 await stderr_task.cancel()
-                err.stderr = stderr_task.next_exc.bytes_read
+                err.stderr = stderr_task.exception.bytes_read
             else:
                 err.stderr = b''
             raise

@@ -1,7 +1,387 @@
 CHANGES
 -------
-Version 0.10 : In Progress
---------------------------
+Version 1.4 - August 23, 2020
+-----------------------------
+08/23/2020 Fixed minimum requirement in setup.py
+
+Version 1.3 - August 23, 2020
+-----------------------------
+08/21/2020 Moved the Pytest plugin to the examples directory.  There have 
+           been several reported problems with it.   It is no longer
+           installed by default.  It was never used by Curio itself.
+
+06/16/2020 Refined the detection of coroutines to use collections.abc.Coroutine.
+	   This change should not affect any existing part of Curio, but it
+	   allows it to properly recognize async functions defined in
+	   extensions such as Cython.  See Issue #326.
+	   
+06/11/2020 Added a Result object.  It's like an Event except that it has a
+           an associated value/exception attached to it.  Here's the basic
+	   usage pattern:
+
+               result = Result()
+	       ...
+	       async def do_work():
+	           try:
+		       ...
+                       await result.set_value(value)
+		   except Exception as e:
+		       await result.set_exception(e)
+
+               async def some_task():
+	           ...
+		   try:
+		       value = await result.unwrap() 
+		       print("Success:", value)
+		   except Exception as e:
+		       print("Fail:", e)
+
+           In this example, the unwrap() method blocks until the result
+	   becomes available.
+
+06/09/2020 Having now needed it a few projects, have added a UniversalResult
+           object.  It allows Curio tasks or threads to wait for a result
+	   to be set by another thread or task.   For example:
+
+               def do_work(result):
+	           ...
+		   result.set_value(value)
+
+               async def some_task(result):
+	           ...
+		   value = await result.unwrap()
+		   ...
+
+               result = UniversalResult()
+	       threading.Thread(target=do_work, args=[result]).start()
+	       curio.run(some_task, result)
+
+           UniversalResult is somewhat similar to a Future.  However, it
+	   really only allows setting and waiting.  There are no callbacks,
+	   cancellation, or any other extras.
+
+Version 1.2 - April 6, 2020
+---------------------------
+
+04/06/2020 Removed hard dependency on contextvars.   It was unnecessary and
+           needlessly broken some things on Python 3.6.
+	   
+04/06/2020 Added a default selector timeout of 1 second for Windows.  This
+           makes everything a bit more friendly for Control-C.  This can be
+	   disabled or changed using the max_select_timeout argument to Kernel
+	   or curio.run().
+	   
+04/04/2020 First crack at a Curio repl.  Idea borrowed from the asyncio
+           REPL.  If you run `python -m curio` it will start a REPL
+	   in which Curio is already running in the background. You
+	   can directly await operations at the top level. For example:
+
+              bash $ python -m curio
+              Use "await" directly instead of "curio.run()".
+              Type "help", "copyright", "credits" or "license" for more information.
+              >>> import curio
+              >>> await curio.sleep(4)
+	      >>>
+
+           Pressing Control-C causes any `await` operation to be cancelled
+	   with a `curio.TaskCancelled` exception.   For normal operations
+	   not involving `await, Control-C raises a `KeyboardInterrupt` as
+           normal.  Note: This feature requires Python 3.8 or newer. 
+
+03/24/2020 Added a pytest plugin for Curio. Contributed by Keith Dart.
+           See curio/pytest_plugin.py.
+
+03/02/2020 Slight refinement to TaskGroup result reporting. If no tasks
+           are spawned in a TaskGroup g, then g.exception will return None
+           to indicate no errors.  g.result will raise an exception
+           indicating that no successful result was obtained. Addresses
+           issue #314.
+
+Version 1.1 - March 1, 2020
+---------------------------
+02/24/2020 Fixed a very subtle edge case involving epoll() and duplicated
+           file descriptors on Linux. The fix required a new trap
+           _io_release() to explitly unregister a file descriptor
+           before closing. This must be embedded in any close()
+           implementation prior to actually calling close() on a real
+           file object.  No changes should be necessary in existing
+           user-level Curio code.  Bug #313 reported by Ondřej Súkup.
+
+Version 1.0 - February 20, 2020
+-------------------------------
+
+**** SPECIAL NOTE ****: For the past few years, Curio has been been an
+experimental project.  However, as it moves towards having a more
+"stable" release, I feel that it is better served by being small as
+opposed to providing every possible feature like a framework. Thus, a wide range of
+minor features have either been removed or refactored. If this broke 
+your code, sorry. Some features have been moved to the examples
+directory.   If something got removed and you'd like to lobby for its 
+return, please submit a bug report. -- Dave
+
+02/19/2020 The Activation base class has been moved into curio.kernel.
+
+02/14/2020 Modified UniversalEvent to also support asyncio for completeness
+           with UniversalQueue.  This requires Curio and asyncio to be
+           running in separate threads.
+
+02/10/2020 Removed absolute time-related functions wake_at(), timeout_at(),
+           and ignore_at().  This kind of functionality (if needed) can
+           be reimplemented using the other sleep/timeout functions. 
+
+02/10/2020 Added daemon flag to TaskGroup.spawn().  This can be used
+           to create a disregarded task that is ignored for the
+           purpose of reporting results, but which is cancelled when
+           the TaskGroup goes away. 
+
+02/10/2020 Added spawn_thread() method to TaskGroup.  Can be used
+           to create an AsyncThread that's attached to the group.
+           AsyncThreads follow the same semantics as tasks.
+         
+02/09/2020 Removed schedule() function. Use sleep(0). 
+
+02/07/2020 Removed all support for signal handling.  Signal handling,
+           by its very nature, is a tricky affair. For instance,
+           signals can only be handled in the main execution thread
+           and there are all sorts of other issues that can arise 
+           when mixed with threads, subprocesses, locks, and other
+           things.  Curio already provides all of the necessary support
+           to implement signal handling if you rely on UniversalEvent
+           or UniversalQueue objects.   Here is a simple example::
+
+               import signal
+               import curio
+
+               evt = curio.UniversalEvent()
+
+               def signal_handler(signo, frame):
+                   evt.set()
+
+               async def wait_for_signal():
+                   await evt.wait()
+                   print("Got a signal!")
+
+               signal.signal(signal.SIGHUP, signal_handler)
+               curio.run(wait_for_signal)
+
+02/07/2020 Removed iteration support from queues.  Queues in the
+           standard library don't support iteration.
+
+02/06/2020 Removed metaprogramming features not used in the implementation
+           of Curio itself.  These include:
+
+               @async_thread
+               @cpubound
+               @blocking
+               @sync_only
+               AsyncABC
+
+           Libraries/frameworks that use Curio should be responsible
+           for their own metaprogramming.  Their removal is meant to
+           make Curio smaller and easier to reason about.
+
+02/06/2020 Added exception and exceptions attributes to TaskGroup.
+           Can be used to check for errors.  For example:
+
+               async with TaskGroup(wait=all) as g:
+                   await g.spawn(coro1)
+                   await g.spawn(coro2)
+                   ...
+               if any(g.exceptions):
+                   print("An error occurred")
+
+           Obviously, you could expand that to be more detailed. 
+
+02/04/2020 Removed TaskGroupError exception and simplified the error
+           handling behavior of task groups.  If tasks exit with an
+           exception, that information is now obtained on the task
+           itself or on the .result attribute of a task group. For
+           example:
+
+               async with TaskGroup() as g:
+                   t1 = await g.spawn(coro1)
+                   t2 = await g.spawn(coro2)
+                   ...
+
+               try:
+                   r = t1.result
+               except WhateverError:
+                   ...
+
+               # Alternatively
+               try:
+                   r = g.result
+               except WhateverError:
+                   ...
+
+           This simplifies both the implementation of task groups as well as 
+           a lot of code that utilizes task groups.  Exceptions are no longer
+           wrapped up in layer-upon-layer of other exceptions.  There is a risk
+           of exceptions passing silently if you don't actually check the result
+           of a task group.  Don't do that. 
+
+02/03/2020 Added convenience properties to TaskGroup.  If you want the
+           result of the first completed task, use .result like this:
+
+               async with TaskGroup(wait=any) as g:
+                   await g.spawn(coro1)
+                   await g.spawn(coro2)
+                   ...
+ 
+               print('Result:', g.result)
+
+           If you want a list of all results *in task creation order*
+           use the .results property:
+
+               async with TaskGroup(wait=all) as g:
+                   await g.spawn(coro1)
+                   await g.spawn(coro2)
+                   ...
+ 
+               print('Results:', g.results)
+
+           Note: Both of these are on the happy path.  If any kind of
+           exception occurs, task groups still produce a
+           TaskGroupError exception.
+
+01/29/2020 Added support for contextvars.  The behavior of context 
+           variables in the context of Curio and threads is not
+           always well defined.  As such, this is a feature that
+           requires explicit user opt-in to enable.  To do it, you need
+           provide an alternative Task class definition to the kernel
+           like this:
+
+               from curio.task import ContextTask
+               from curio import Kernel
+
+               with Kernel(taskcls=ContextTask) as kernel:
+                    kernel.run(coro)
+
+           Alternatively, you can use:
+
+               from curio import run
+               run(coro, taskcls=ContextTask)
+
+01/29/2020 Added optional keyword-only argument taskcls to Kernel. This
+           can be used to provide alternative implementations of the
+           internal Task class used to wrap coroutines.  This can be
+           useful if you want to subclass Task or implement certain
+           task-related features in a different way.
+
+10/15/2019 Refactored task.py into separate files for tasks and time
+           management.
+
+09/29/2019 Removed Promise.  Not documented, but also want to rethink the
+           whole design/implementation of it. The "standard" way that
+           Python implements "promises" is through the Future class
+           as found in the concurrent.futures module.  However, Futures
+           are tricky.  They often have callback functions attached to 
+           them and they can be cancelled.  Some further thought needs
+           to be given as to how such features might integrate with the
+           rest of Curio.  Code for the old Promise class can be 
+           found the examples directory.
+
+09/26/2019 Removed support for the Asyncio bridge. It wasn't documented
+           and there are many possible ways in which Curio might 
+           potentially interact with an asyncio event loop. For example,
+           using queues.  Asyncio interaction may be revisited in the
+           future.  
+
+09/13/2019 Support for context-manager use of spawn_thread() has been
+           withdrawn.  It's a neat feature, but the implementation
+           is pretty hairy.  It also creates a situation where async
+           functions partially run in coroutines and partially in threads.
+           All things equal, it's probably more sane to make this 
+           kind of distinction at the function level, not at the level
+           of code blocks.   
+
+09/11/2019 Removed AsyncObject and AsyncInstanceType. Very specialized.
+           Not used elsewhere in Curio. Involves metaclasses. One
+           less thing to maintain.
+
+09/11/2019 I want to use f-strings. Now used for string formatting
+           everywhere except in logging messages. Sorry Python 3.5.
+
+09/11/2019 Removed the allow_cancel optional argument to spawn().
+           If a task wants to disable cancellation, it should 
+           explicitly manage that on its own. 
+
+09/11/2019 Removed the report_crash option to spawn(). Having
+           it as an optional argument is really the wrong place for
+           this.  On-by-default crash logging is extremely useful for
+           debugging.  However, if you want to disable it, it's
+           annoying to have to go change your source code on a task-by-task
+           basis.  A better option is to suppress it via configuration 
+           of the logging module.  Better yet: write your code so that
+           it doesn't crash.
+
+09/10/2019 Some refactoring of some internal scheduling operations.
+           The SchedFIFO and SchedBarrier classes are now available
+           for more general use by any code that wants to implement
+           different sorts of synchronization primitives.
+
+09/10/2019 Removed the abide() function.  This feature was from the
+           earliest days of Curio when there was initial thinking 
+           about the interaction of async tasks and existing threads.
+           The same functionality can still be implemented using run_in_thread()
+           or block_in_thread() instead.  In the big picture, the problem
+           being solved might not be that common.  So, in the interest
+           of making Curio smaller, abide() has ridden off into the sunset.
+
+09/08/2019 Removed BoundedSemaphore.
+
+09/03/2019 Removed the experimental aside() functionality.  Too much 
+           magic.  Better left to others.
+
+09/03/2019 Removed the gather() function.  Use TaskGroup instead.
+
+09/03/2019 Removed get_all_tasks() function.
+
+09/03/2019 Removed the Task.pdb() method.
+
+09/03/2019 Removed the Task.interrupt() method.
+
+09/03/2019 The pointless (and completely unused) name argument to TaskGroup() 
+           has been removed. 
+
+08/09/2019 Exceptions raised inside the Curio kernel itself are no longer 
+           reported to tasks.  Instead, they cause Curio to die. The
+           kernel is never supposed to raise exceptions on its own--any
+           exception that might be raised is an internal programming error.
+           This change should not impact user-level code, but might affect
+           uncontrolled Ctrl-C handling. If a KeyboardInterrupt occurs
+           in the middle of kernel-level code, it will cause an uncontrolled
+           death. If this actually matters to you, then modify your code to
+           properly handle Ctrl-C via signal handling.
+
+04/14/2019 The Channel.connect() method no longer implements auto-retry. 
+           In practice, this kind of feature can cause interference. Better
+           to let the caller do the retry if they want.
+
+04/14/2019 Simplified the implementation and semantics of cancellation control.
+           The enable_cancellation() function has been removed.  It is now
+           only possible to disable cancellation.  Nesting is still allowed.
+           Pending cancellation exceptions are raised on the first blocking
+           call executed when reenabled.  The check_cancellation() function 
+           can be used to explicitly check for cancellation as before.
+           
+03/09/2019 Fixed a bug in network.open_connection() that was passing arguments
+           incorrectly.  Issue #291.
+
+11/18/2018 Removed code that attempted to detect unsafe async generator
+           functions.  Such code is now executed without checks or 
+           warnings.  It's still possible that code in finally blocks
+           might not execute unless you use curio.meta.finalize() or
+           a function such as async_generator.aclosing() (third party).
+           The @safe_generator decorator is now also unnecessary.
+
+11/11/2018 Removed the wait argument to TaskGroup.join().  The waiting policy
+           for task groups is specified in the TaskGroup constructor.  For
+           example:
+
+               with TaskGroup(wait=any) as group:
+                    ...
+
 09/05/2018 Tasks submitted to Kernel.run() no longer log exceptions should they
            crash.  Such tasks already return immediately to the caller with the
            exception raised. 

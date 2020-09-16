@@ -41,17 +41,13 @@ def test_sleep(kernel):
     elapsed = end - start
     assert elapsed > 0.5
 
-def test_wakeat(kernel):
+def test_clock(kernel):
     async def main():
-        clock = await kernel_clock()
-        newclock = await wake_at(clock+0.5)
-        assert (newclock - clock) >= 0.5
-
-    start = time.time()
+        start = await clock()
+        await sleep(0.1)
+        end = await clock()
+        assert (end - start) >= 0.1
     kernel.run(main)
-    end = time.time()
-    assert (end - start) > 0.5
-
 
 def test_sleep_cancel(kernel):
     cancelled = False
@@ -90,44 +86,6 @@ def test_sleep_timeout(kernel):
     kernel.run(main)
     assert cancelled
 
-def test_sleep_timeout_absolute(kernel):
-    cancelled = False
-
-    async def sleeper():
-        nonlocal cancelled
-        try:
-            await timeout_at((await kernel_clock()) + 0.1, sleep, 1)
-            assert False
-        except TaskTimeout:
-            cancelled = True
-
-    async def main():
-        task = await spawn(sleeper)
-        await task.join()
-
-    kernel.run(main)
-    assert cancelled
-
-
-def test_sleep_timeout_absolute_context(kernel):
-    cancelled = False
-
-    async def sleeper():
-        nonlocal cancelled
-        try:
-            async with timeout_at((await kernel_clock()) + 0.1):
-                await sleep(1)
-            assert False
-        except TaskTimeout:
-            cancelled = True
-
-    async def main():
-        task = await spawn(sleeper)
-        await task.join()
-
-    kernel.run(main)
-    assert cancelled
-
 def test_sleep_ignore_timeout(kernel):
     async def sleeper():
         cancelled = False
@@ -142,28 +100,6 @@ def test_sleep_ignore_timeout(kernel):
         if s.result is None:
             cancelled = True
 
-        assert cancelled
-
-    async def main():
-        task = await spawn(sleeper)
-        await task.join()
-
-    kernel.run(main)
-
-def test_sleep_ignore_timeout_absolute(kernel):
-    async def sleeper():
-        cancelled = False
-        if await ignore_at((await kernel_clock()) + 0.1, sleep(1)) is None:
-            cancelled = True
-
-        assert cancelled
-
-        cancelled = False
-        async with ignore_at((await kernel_clock()) + 0.1) as s:
-            await sleep(1)
-
-        if s.result is None:
-            cancelled = True
         assert cancelled
 
     async def main():
@@ -282,7 +218,7 @@ def test_task_cancel_join(kernel):
 
     async def main():
         task = await spawn(child)
-        await schedule()
+        await sleep(0)
         await task.cancel()
 
         # Try joining with a cancelled task. Should raise a TaskError
@@ -474,7 +410,7 @@ def test_nested_timeout(kernel):
 
     async def parent():
         try:
-            await timeout_after(1, child())
+            await timeout_after(0.75, child())
         except TaskTimeout:
             results.append('parent timeout')
 
@@ -517,7 +453,7 @@ def test_nested_context_timeout(kernel):
 
     async def parent():
         try:
-            async with timeout_after(1):
+            async with timeout_after(0.75):
                 await child()
         except TaskTimeout:
             results.append('parent timeout')
@@ -782,38 +718,6 @@ def test_task_cancel_timeout(kernel):
     kernel.run(main)
     assert results == [ 'child', 'cancelled', 'done cancel' ]
 
-def test_task_gather(kernel):
-    async def child(period):
-        await sleep(period)
-        return period
-
-    async def main():
-        t1 = await spawn(child, 0.1)
-        t2 = await spawn(child, 0.2)
-        t3 = await spawn(child, 0.3)
-        results = await gather([t1, t2, t3])
-        assert results == [0.1, 0.2, 0.3]
-        
-    kernel.run(main)
-
-def test_task_gather_timeout(kernel):
-    async def child(period):
-        await sleep(period)
-        return period
-
-    async def main():
-        t1 = await spawn(child, 0.1)
-        t2 = await spawn(child, 0.2)
-        t3 = await spawn(child, 0.3)
-        try:
-            async with timeout_after(0.12):
-                results = await gather([t1, t2, t3])
-        except TaskTimeout as e:
-            assert e.results[0] == 0.1
-            assert all(isinstance(r, TaskError) and isinstance(r.__cause__, TaskCancelled) for r in e.results[1:])
-        
-    kernel.run(main)
-
 def test_reentrant_kernel(kernel):
     async def child():
         pass
@@ -823,26 +727,6 @@ def test_reentrant_kernel(kernel):
             kernel.run(child)
 
     kernel.run(main)
-
-def test_submit_errors(kernel):
-    import types
-    @types.coroutine
-    def bad_trap():
-        with pytest.raises(IndexError):
-            yield (123, "bad")
-
-    async def main():
-        await bad_trap()
-
-    with pytest.raises(TypeError):
-        kernel.run(abs)
-
-    kernel.run(main)
-
-    # Repair the kernel (only for testing)
-    kernel._crashed = False
-    kernel._shutdown_funcs = []
-    kernel._kernel_task_id = None
 
 from curio.traps import *
 
@@ -854,7 +738,7 @@ def test_pending_cancellation(kernel):
         with pytest.raises(CancelledError):
             await _read_wait(None)
 
-        self.cancel_pending = CancelledError()        
+        self.cancel_pending = CancelledError()
         with pytest.raises(CancelledError):
             await _future_wait(None)
 
@@ -868,24 +752,6 @@ def test_pending_cancellation(kernel):
             assert True
         except TaskTimeout:
             assert False
-            
-    kernel.run(main)
-
-def test_interruption(kernel):
-    evt = Event()
-    async def child():
-        try:
-            await evt.wait()
-        except TaskInterrupted:
-            assert True
-        else:
-            assert False
-        return True
-
-    async def main():
-        t = await spawn(child)
-        await t.interrupt()
-        assert await t.join()
 
     kernel.run(main)
 
@@ -915,7 +781,7 @@ def test_io_registration(kernel):
     s1, s2 = socket.socketpair()
     s1.setblocking(False)
     s2.setblocking(False)
-    
+
     # Fill the send buffer
     while True:
         try:
@@ -957,7 +823,7 @@ def test_coro_partial(kernel):
         assert y == 2
         assert z == 3
         return True
-        
+
     async def main():
         assert await func(1, 2, 3)
         assert await ignore_after(1, func(1,2,3))
@@ -998,11 +864,93 @@ def test_custom_cancel(kernel):
     async def main():
         t = await spawn(child)
         await t.cancel(exc=CustomCancelled)
-    
+
     kernel.run(main)
 
-        
+def test_timeout_badness(kernel):
+    import time
+    async def main():
+        async with timeout_after(0.1):
+            time.sleep(0.2)   # Timeout will take too long. Should issue a warning.
+
+        # Execution should make it here.  There were no blocking operations to cancel.
+        # It makes no sense to issue a cancellation on the next operation because we're
+        # Likely out of the timeout block
+        assert True
+
+    kernel.run(main)
+
+def test_kernel_no_shutdown():
+    # Code coverage test
+    k = Kernel()
+    del k
+
+    with Kernel() as k:
+        pass
+
+    with pytest.raises(RuntimeError):
+        k.run()
 
 
-        
-            
+def test_kernel_exit():
+    # Code coverage test
+    async def main():
+        raise SystemExit()
+
+    with pytest.raises(SystemExit):
+         with Kernel() as k:
+             k.run(main)
+
+
+def test_kernel_badtrap():
+    # Code coverage test
+    async def main():
+        from curio.traps import _kernel_trap
+        await _kernel_trap('bogus', 1)
+
+    with pytest.raises(KeyError):
+         with Kernel() as k:
+             k.run(main)
+
+def test_kernel_multischedule(kernel):
+    async def sleeper():
+        try:
+            async with timeout_after(0.5):
+                await sleep(0.25)
+        except TaskTimeout:
+            assert False
+
+        await sleep(0.1)    # Should not crash!
+        return True
+
+    async def main():
+        import time
+        t = await spawn(sleeper)
+        await sleep(0.1)
+        time.sleep(1)     # Force time clock to elapse past both the sleep and outer timeout
+        r = await t.join()
+        assert r
+
+    kernel.run(main)
+
+def test_kernel_debug():
+    from curio.debug import schedtrace, traptrace
+    async def hello():
+        await sleep(0)
+
+    with Kernel(debug=[schedtrace,traptrace]) as k:
+         k.run(hello)
+
+    with Kernel(debug=True) as k:
+         k.run(hello)
+
+    with Kernel(debug=schedtrace) as k:
+         k.run(hello)
+
+    with Kernel(debug=schedtrace(filter='none')) as k:
+        k.run(hello)
+
+
+
+
+

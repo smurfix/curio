@@ -5,8 +5,9 @@ from curio.socket import *
 import io
 import socket as std_socket
 import pytest
+import sys
 
-def test_socket_blocking(kernel):
+def test_socket_blocking(kernel, portno):
     '''
     Test of exposing a socket in blocking mode
     '''
@@ -37,8 +38,8 @@ def test_socket_blocking(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -52,8 +53,9 @@ def test_socket_blocking(kernel):
         'handler done'
     ]
 
-
-def test_socketstream_blocking(kernel):
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="not supported on Windows")
+def test_socketstream_blocking(kernel, portno):
     '''
     Test of exposing a socket stream in blocking mode
     '''
@@ -84,8 +86,8 @@ def test_socketstream_blocking(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -98,8 +100,9 @@ def test_socketstream_blocking(kernel):
         'handler done'
     ]
 
-
-def test_filestream_blocking(kernel):
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="not supported on Windows")
+def test_filestream_blocking(kernel, portno):
     '''
     Test of exposing a socket in blocking mode
     '''
@@ -130,8 +133,8 @@ def test_filestream_blocking(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -144,8 +147,9 @@ def test_filestream_blocking(kernel):
         'handler done'
     ]
 
-
-def test_filestream_bad_blocking(kernel):
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="not supported on Windows")
+def test_filestream_bad_blocking(kernel, portno):
     '''
     Test of exposing a socket in blocking mode with buffered data error
     '''
@@ -175,8 +179,8 @@ def test_filestream_bad_blocking(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -184,7 +188,9 @@ def test_filestream_bad_blocking(kernel):
     kernel.run(main())
     assert results[0]
 
-def test_socketstream_bad_blocking(kernel):
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="not supported on Windows")
+def test_socketstream_bad_blocking(kernel, portno):
     '''
     Test of exposing a socket in blocking mode with buffered data error
     '''
@@ -214,8 +220,8 @@ def test_socketstream_bad_blocking(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -223,11 +229,11 @@ def test_socketstream_bad_blocking(kernel):
     kernel.run(main())
     assert results[0]
 
-def test_read_partial(kernel):
+def test_read_partial(kernel, portno):
     done = Event()
     results = []
     async def handler(client, addr):
-        try:        
+        try:
             await client.send(b'OK')
             s = client.as_stream()
             line = await s.readline()
@@ -248,8 +254,8 @@ def test_read_partial(kernel):
 
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -257,7 +263,7 @@ def test_read_partial(kernel):
     kernel.run(main())
     assert results == [ b'hello\n', b'wo', b'rld\n']
 
-def test_readall(kernel):
+def test_readall(kernel, portno):
     done = Event()
     results = []
 
@@ -284,8 +290,8 @@ def test_readall(kernel):
 
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -299,7 +305,7 @@ def test_readall(kernel):
     ]
 
 
-def test_readall_partial(kernel):
+def test_readall_partial(kernel, portno):
     done = Event()
 
     async def handler(client, addr):
@@ -320,8 +326,8 @@ def test_readall_partial(kernel):
 
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -329,7 +335,7 @@ def test_readall_partial(kernel):
     kernel.run(main())
 
 
-def test_readall_timeout(kernel):
+def test_readall_timeout(kernel, portno):
     done = Event()
     results = []
 
@@ -354,8 +360,8 @@ def test_readall_timeout(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -369,7 +375,7 @@ def test_readall_timeout(kernel):
     ]
 
 
-def test_read_exactly(kernel):
+def test_read_exactly(kernel, portno):
     done = Event()
     results = []
 
@@ -390,8 +396,8 @@ def test_read_exactly(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -407,7 +413,7 @@ def test_read_exactly(kernel):
     ]
 
 
-def test_read_exactly_incomplete(kernel):
+def test_read_exactly_incomplete(kernel, portno):
     done = Event()
     results = []
     async def handler(client, addr):
@@ -428,8 +434,8 @@ def test_read_exactly_incomplete(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -438,7 +444,7 @@ def test_read_exactly_incomplete(kernel):
 
     assert results[0] ==  b'Msg1\nMsg2\nMsg3\n'
 
-def test_read_exactly_timeout(kernel):
+def test_read_exactly_timeout(kernel, portno):
     done = Event()
     results = []
 
@@ -465,8 +471,8 @@ def test_read_exactly_timeout(kernel):
 
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -481,7 +487,7 @@ def test_read_exactly_timeout(kernel):
 
 
 
-def test_readline(kernel):
+def test_readline(kernel, portno):
     done = Event()
     results = []
 
@@ -502,8 +508,8 @@ def test_readline(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -519,7 +525,7 @@ def test_readline(kernel):
     ]
 
 
-def test_readlines(kernel):
+def test_readlines(kernel, portno):
     done = Event()
     results = []
 
@@ -539,8 +545,8 @@ def test_readlines(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -556,7 +562,7 @@ def test_readlines(kernel):
     ]
 
 
-def test_readlines_timeout(kernel):
+def test_readlines_timeout(kernel, portno):
     done = Event()
     results = []
 
@@ -582,8 +588,8 @@ def test_readlines_timeout(kernel):
 
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -598,7 +604,7 @@ def test_readlines_timeout(kernel):
     ]
 
 
-def test_writelines(kernel):
+def test_writelines(kernel, portno):
     done = Event()
     results = []
 
@@ -619,8 +625,8 @@ def test_writelines(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -634,7 +640,7 @@ def test_writelines(kernel):
     ]
 
 
-def test_writelines_timeout(kernel):
+def test_writelines_timeout(kernel, portno):
     done = Event()
     results = []
     async def handler(client, addr):
@@ -662,8 +668,8 @@ def test_writelines_timeout(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -672,8 +678,9 @@ def test_writelines_timeout(kernel):
 
     assert results[0] == len(results[1])
 
-
-def test_write_timeout(kernel):
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="fails on windows")
+def test_write_timeout(kernel, portno):
     done = Event()
     results = []
     async def handler(client, addr):
@@ -696,8 +703,8 @@ def test_write_timeout(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -706,7 +713,7 @@ def test_write_timeout(kernel):
 
     assert results[0] == len(results[1])
 
-def test_iterline(kernel):
+def test_iterline(kernel, portno):
     results = []
 
     async def handler(client, addr):
@@ -727,8 +734,8 @@ def test_iterline(kernel):
 
     async def main():
         async with TaskGroup() as g:
-            serv = await g.spawn(tcp_server, '', 25000, handler)
-            await g.spawn(test_client, ('localhost', 25000), serv)
+            serv = await g.spawn(tcp_server, '', portno, handler)
+            await g.spawn(test_client, ('localhost', portno), serv)
 
     kernel.run(main())
 
@@ -741,7 +748,7 @@ def test_iterline(kernel):
     ]
 
 
-def test_double_recv(kernel):
+def test_double_recv(kernel, portno):
     done = Event()
     results = []
 
@@ -772,8 +779,8 @@ def test_double_recv(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        client = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        client = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await client.join()
@@ -788,7 +795,9 @@ def test_double_recv(kernel):
         'handler done'
         ]
 
-def test_sendall_cancel(kernel):
+@pytest.mark.skipif(True,
+                    reason="flaky")
+def test_sendall_cancel(kernel, portno):
     done = Event()
     start = Event()
     results = {}
@@ -815,8 +824,8 @@ def test_sendall_cancel(kernel):
         await sock.close()
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        t = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        t = await spawn(test_client, ('localhost', portno), serv)
         await sleep(0.1)
         await t.cancel()
         await start.set()
@@ -828,7 +837,7 @@ def test_sendall_cancel(kernel):
     assert results['handler'] == results['sender']
 
 
-def test_stream_bad_context(kernel):
+def test_stream_bad_context(kernel, portno):
     done = Event()
     results = []
     async def handler(client, addr):
@@ -850,8 +859,8 @@ def test_stream_bad_context(kernel):
 
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -860,7 +869,7 @@ def test_stream_bad_context(kernel):
 
     assert results == [ True ]
 
-def test_stream_bad_iter(kernel):
+def test_stream_bad_iter(kernel, portno):
     done = Event()
     results = []
     async def handler(client, addr):
@@ -883,8 +892,8 @@ def test_stream_bad_iter(kernel):
 
 
     async def main():
-        serv = await spawn(tcp_server, '', 25000, handler)
-        c = await spawn(test_client, ('localhost', 25000), serv)
+        serv = await spawn(tcp_server, '', portno, handler)
+        c = await spawn(test_client, ('localhost', portno), serv)
         await done.wait()
         await serv.cancel()
         await c.join()
@@ -892,3 +901,45 @@ def test_stream_bad_iter(kernel):
     kernel.run(main())
 
     assert results == [ True ]
+
+def test_io_waiting(kernel):
+    async def handler(sock):
+        result = await sock.accept()
+
+    async def main():
+        from curio.traps import _io_waiting
+
+        sock = socket(AF_INET, SOCK_STREAM)
+        sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
+        sock.bind(('',25000))
+        sock.listen(1)
+        async with sock:
+            t1 = await spawn(handler, sock)
+            await sleep(0.1)
+            r, w = await _io_waiting(sock)
+            assert t1 == r
+            assert w == None
+            await t1.cancel()
+
+        r,w = await _io_waiting(0)
+        assert (r, w) == (None, None)
+
+    kernel.run(main())
+
+def test_io_unregister(kernel):
+    # This is purely a code coverage test
+    async def reader(sock):
+        from curio.traps import _read_wait
+        await _read_wait(sock.fileno())
+
+    async def main():
+        from curio.traps import _write_wait
+        sock = socket(AF_INET, SOCK_DGRAM)
+        sock.bind(('', 26000))
+        t = await spawn(reader(sock))
+        await sleep(0.1)
+        await _write_wait(sock.fileno())
+        await t.cancel()
+        await sock.close()
+    kernel.run(main())
+    assert True

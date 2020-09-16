@@ -1,12 +1,12 @@
-Curio How-To
-============
+How-To
+======
 
-This document provides some recipes for using Curio to perform common tasks.
+This document provides some recipes for common programming tasks.
 
-How do you write a simple TCP server?
--------------------------------------
+How do you write a TCP server?
+------------------------------
 
-Here is an example of a simple TCP echo server::
+Here is an example of a TCP echo server::
 
     from curio import run, spawn, tcp_server
 
@@ -22,8 +22,9 @@ Here is an example of a simple TCP echo server::
     if __name__ == '__main__':
         run(tcp_server, '', 25000, echo_client)
 
-This server uses sockets directly.  If you want to a use a file-like streams
-interface, use the ``as_stream()`` method like this::
+This server uses sockets directly but supports concurrent connections.
+If you want to a use a file-like streams interface, use the
+``as_stream()`` method like this::
 
     from curio import run, spawn, tcp_server
 
@@ -43,7 +44,7 @@ interface, use the ``as_stream()`` method like this::
 How do you write a UDP Server?
 ------------------------------
 
-Here is an example of a simple UDP echo server using sockets::
+Here is an example of a UDP echo server using sockets::
 
     import curio
     from curio import socket
@@ -59,7 +60,7 @@ Here is an example of a simple UDP echo server using sockets::
     if __name__ == '__main__':
         curio.run(udp_echo, ('', 26000))
 
-At this time, there are no high-level function (i.e., similar to
+There are no high-level functions (i.e., similar to
 ``tcp_server()``) to run a UDP server. 
 
 
@@ -127,10 +128,10 @@ Ah, a redirect to HTTPS.  Let's make a connection with SSL applied to it::
     if __name__ == '__main__':
         curio.run(main)
 
-It's worth noting that the primary purpose of curio is
+It's worth noting that the primary purpose of Curio is
 merely concurrency and I/O.  You can create sockets and you can apply
-things such as SSL to them. However, curio doesn't implement any
-application-level protocols such as HTTP.  Think of curio as a base-layer
+things such as SSL to them. However, Curio doesn't implement any
+application-level protocols such as HTTP.  Think of Curio as a base-layer
 for doing that.
 
 How do you write an SSL-enabled server?
@@ -172,18 +173,18 @@ Here's an example of a server that speaks SSL::
 
 The ``curio.ssl`` submodule is a wrapper around the ``ssl`` module in the standard
 library.  It has been modified slightly so that functions responsible for wrapping
-sockets return a socket compatible with curio.  Otherwise, you'd use it the same
+sockets return a socket compatible with Curio.  Otherwise, you'd use it the same
 way as the normal ``ssl`` module.
 
 To test this out, point a browser at ``https://localhost:10000`` and see if you
 get a readable response.  The browser might yell at you with some warnings
 about the certificate if it's self-signed or misconfigured in some way. However, the
-example shows the basic steps involved in using SSL with curio.
+example shows the basic steps involved in using SSL with Curio.
 
 How do you perform a blocking operation?
 ----------------------------------------
 
-If you need to perform a blocking operation that runs outside of curio,
+If you need to perform a blocking operation that runs outside of Curio,
 use ``run_in_thread()`` to have it run in a backing thread.  For example::
 
     import time
@@ -251,7 +252,7 @@ manager.  For example::
 
 This is a cumulative timeout applied to the entire block.   After the 
 specified number of seconds has elapsed, a ``TaskTimeout`` exception
-will be raised in the current operation blocking in curio.
+will be raised in the current operation blocking in Curio.
 
 How do you shield operations from timeouts or cancellation?
 -----------------------------------------------------------
@@ -303,8 +304,8 @@ tasks is to use a queue.  For example::
 How can a task and a thread communicate?
 ----------------------------------------
 
-The most straightforward way to communicate between curio tasks and
-threads is to use curio's ``UniversalQueue`` class::
+The most straightforward way to communicate between Curio tasks and
+threads is to use Curio's ``UniversalQueue`` class::
 
     import curio
     import threading
@@ -335,39 +336,9 @@ threads is to use curio's ``UniversalQueue`` class::
         curio.run(main)
 
 A ``UniversalQueue`` can be used by any combination of threads or
-curio tasks.  The same API is used in both cases.  However,
+Curio tasks.  The same API is used in both cases.  However,
 when working with coroutines, queue operations must be
 prefaced by an ``await`` keyword.
-
-How can coroutines and threads share a common lock?
----------------------------------------------------
-
-A lock can be shared if the lock in question is one from the
-``threading`` module and you use the curio ``abide()`` function.  For
-example::
-
-    import threading
-    import curio
-
-    lock = threading.Lock()      # Must be a thread-lock
-
-    # Function running in a thread
-    def func():
-        ...
-        with lock:
-             critical_section
-             ...
-
-    # Coroutine running curio
-    async def coro():
-        ...
-        async with curio.abide(lock):
-             critical_section
-             ...
-
-``curio.abide()`` adapts the given lock to work safely inside
-curio.  If given a thread-lock, the various locking operations
-are executed in threads to avoid blocking other curio tasks. 
 
 How can synchronous code set an asynchronous event?
 ---------------------------------------------------
@@ -401,6 +372,70 @@ code.  You can flip the roles around as well::
 Note: Waiting on an event in a synchronous function should take place in a separate
 thread to avoid blocking the kernel loop.
 
+How do you catch signals?
+-------------------------
+
+In Python, signals can only be caught and processed in the main thread
+by a signal handler installed via the ``signal`` built-in module.  To
+communicate a signal to Curio, you can use a ``UniversalEvent`` as shown
+in the previous recipe.  For example::
+
+    from curio import UniversalEvent, run
+    import signal
+
+    # Set up signal handling   
+    sigint_evt = UniversalEvent()
+    
+    def handle_sigint(signo, frame):
+        sigint_evt.set()
+    
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    # Wait for a single in Curio code
+    async def main():
+        print("Waiting for a signal")
+        await sigint_evt.wait()
+        print("Got it!")
+
+    run(main)
+
+Many of these features can be abstracted into classes if you wish. For
+example, here is a class (courtesy of Keith Dart)::
+
+    class SignalEvent(UniversalEvent):
+        def __init__(self, *signos):
+            super().__init__()
+            self._old = old = {}
+            for signo in signos:
+                orig = signal.signal(signo, self._handler)
+                old[signo] = orig
+
+        def _handler(self, signo, frame):
+            self.set()
+
+        def __del__(self):
+            while self._old:
+                signo, handler = self._old.popitem()
+                try:
+                    signal.signal(signo, handler)
+                except TypeError:  # spurious TypeError happens during shutdown.
+                    pass
+        
+    sigint_evt = SignalEvent(signal.SIGINT)
+
+    async def main():
+        print("Waiting for a signal")
+        await sigint_evt.wait()
+        print("Got it!")
+
+    run(main)
+
+In general, signal handling can be an extremely complicated affair
+that interacts strangely with the rest of the environment.  Because of
+this, Curio chooses to stay out of the way entirely.  Instead, you can
+use ``UniversalEvent`` or ``UniversalQueue`` to communicate from a
+signal handler to code running in Curio.
+
 How do you run external commands in a subprocess?
 -------------------------------------------------
 
@@ -417,7 +452,7 @@ For example::
 
 The ``check_output()`` function takes the same arguments and raises the
 same exceptions as its standard library counterpart.  The underlying 
-implementation is built entirely using the async I/O primitives of curio.
+implementation is built entirely using the async I/O primitives of Curio.
 It's fast and no backing threads are used. 
 
 
@@ -439,7 +474,7 @@ normal ``subprocess`` module. For example::
          resp = await p.stdout.read(maxsize)
 
 In this example, the ``p.stdin`` and ``p.stdout`` streams are
-replaced by curio-compatible file streams.  You use the same
+replaced by Curio-compatible file streams.  You use the same
 I/O operations as before, but make sure you preface them
 with ``await``. 
 
@@ -501,3 +536,24 @@ Use the ``current_task()`` function like this::
 Once you have a reference to the ``Task``, it can be passed
 around and use in other operations.  For example, a different
 task could use it to cancel.
+
+How do you use contextvars?
+---------------------------
+
+``contextvars`` is a library added in Python 3.7 that can provide access to per-task
+global variables (similar in purpose to features like thread locals).  Curio does not
+support ``contextvars`` by default because its behavior is somewhat ill-defined when
+mixing coroutines and threads.  However, if you know what you're doing, you can opt
+into using it as follows:: 
+
+    from curio.task import ContextTask
+    from curio import run
+
+    async def main():
+        # ... whatever
+        ...
+
+    run(main, taskcls=ContextTask)
+
+In this case, each Curio task will have its own set of context variables.
+

@@ -4,7 +4,8 @@
 # and then attach a monitor to it, like this:
 #
 #    k = Kernel()
-#    Monitor(k)
+#    mon = Monitor(k)
+#    k.run(mon.start)
 #
 # If using the run() function, you can do this:
 #
@@ -18,7 +19,8 @@
 # can do manual setup:
 #
 #    k = Kernel()
-#    Monitor(k, host, port)
+#    mon = Monitor(k, host, port)
+#    k.run(mon.start)
 #
 # Where host and port configure the network address on which the monitor
 # operates.
@@ -38,7 +40,7 @@
 # is that it allows curio to be monitored even if the curio kernel is
 # completely deadlocked, occupied with a large CPU-bound task, or
 # otherwise hosed in the some way.  At a minimum, you can connect,
-# look at the task table, and see what the tasks are doing.  
+# look at the task table, and see what the tasks are doing.
 #
 # The internal monitor loop implemented on curio itself is presently
 # used to implement external task cancellation.  Manipulating any part
@@ -58,7 +60,7 @@ import argparse
 import logging
 
 # --- Curio
-from .task import Task
+from .task import spawn
 from . import queue
 
 # ---
@@ -77,23 +79,14 @@ class Monitor(object):
         self.kernel = kern
         self.address = (host, port)
         self.monitor_queue = queue.UniversalQueue()
-                                               
-        log.info('Starting Curio monitor at %s:%d', host, port)
-
-        # The monitor launches both a separate thread and helper task
-        # that runs inside curio itself to manage cancellation events
-        self._ui_thread = threading.Thread(target=self.server, args=(), daemon=True)
-        self._closing = threading.Event()
-        self._ui_thread.start()
-
-        monitor_task = Task(self.monitor_task())
-        monitor_task.daemon = True
-        kern._ready.append(monitor_task)
-        kern._tasks[monitor_task.id] = monitor_task
+        self._closing = None
+        self._ui_thread = None
 
     def close(self):
-        self._closing.set()
-        self._ui_thread.join()
+        if self._closing:
+            self._closing.set()
+        if self._ui_thread:
+            self._ui_thread.join()
 
     async def monitor_task(self):
         '''
@@ -102,6 +95,20 @@ class Monitor(object):
         while True:
             task = await self.monitor_queue.get()
             await task.cancel()
+
+    async def start(self):
+        '''
+        Function to start the monitor
+        '''
+        # The monitor launches both a separate thread and helper task
+        # that runs inside curio itself to manage cancellation events
+
+        log.info('Starting Curio monitor at %s', self.address)
+
+        self._ui_thread = threading.Thread(target=self.server, args=(), daemon=True)
+        self._closing = threading.Event()
+        self._ui_thread.start()
+        await spawn(self.monitor_task, daemon=True)
 
     def server(self):
         '''
@@ -261,7 +268,6 @@ class Monitor(object):
     def command_exit(self, sout):
         sout.write('Leaving monitor. Hit Ctrl-C to exit\n')
         sout.flush()
-
 
 def monitor_client(host, port):
     '''

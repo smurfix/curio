@@ -6,9 +6,8 @@
 #
 
 __all__ = [
-    'iscoroutinefunction', 'finalize', 'blocking', 'cpubound',
-    'awaitable', 'asyncioable', 'sync_only', 'AsyncABC',
-    'AsyncObject', 'curio_running', 'instantiate_coroutine',
+    'iscoroutinefunction', 'finalize', 'awaitable', 'asyncioable',
+    'curio_running', 'instantiate_coroutine', 'from_coroutine',
  ]
 
 # -- Standard Library
@@ -17,11 +16,11 @@ from sys import _getframe
 import sys
 import inspect
 from functools import wraps, partial
-from abc import ABCMeta, abstractmethod
 import dis
 import asyncio
 import threading
 from contextlib import contextmanager
+import collections.abc
 
 # -- Curio
 
@@ -49,24 +48,16 @@ def curio_running():
     '''
     return getattr(_locals, 'running', False)
 
+_CO_NESTED = inspect.CO_NESTED
+_CO_FROM_COROUTINE = inspect.CO_COROUTINE | inspect.CO_ITERABLE_COROUTINE | inspect.CO_ASYNC_GENERATOR
+_isasyncgenfunction = inspect.isasyncgenfunction
 
-# Some flags defined in Include/code.h
-_CO_NESTED = 0x0010
-_CO_GENERATOR = 0x0020
-_CO_COROUTINE = 0x0080
-_CO_ITERABLE_COROUTINE = 0x0100
-_CO_ASYNC_GENERATOR = 0x0200
-_CO_FROM_COROUTINE = _CO_COROUTINE | _CO_ITERABLE_COROUTINE | _CO_ASYNC_GENERATOR
-
-try:
-    _isasyncgenfunction = inspect.isasyncgenfunction
-except AttributeError:
-    # Not supported in python 3.5
-    _isasyncgenfunction = lambda func: False
-
-def _from_coroutine(level=2):
+def from_coroutine(level=2, _cache={}):
     f_code = _getframe(level).f_code
+    if f_code in _cache:
+        return _cache[f_code]
     if f_code.co_flags & _CO_FROM_COROUTINE:
+        _cache[f_code] = True
         return True
     else:
         # Comment:  It's possible that we could end up here if one calls a function
@@ -81,8 +72,9 @@ def _from_coroutine(level=2):
         # Where func() is some function that we've wrapped with one of the decorators
         # below.  If so, the code object is nested and has a name such as <listcomp> or <genexpr>
         if (f_code.co_flags & _CO_NESTED and f_code.co_name[0] == '<'):
-            return _from_coroutine(level + 2)
+            return from_coroutine(level + 2)
         else:
+            _cache[f_code] = False
             return False
 
 def iscoroutinefunction(func):
@@ -103,13 +95,14 @@ def instantiate_coroutine(corofunc, *args, **kwargs):
     it's not a coroutine, we call corofunc(*args, **kwargs) and hope
     for the best.
     '''
-    if inspect.iscoroutine(corofunc) or inspect.isgenerator(corofunc):
+    if isinstance(corofunc, collections.abc.Coroutine) or inspect.isgenerator(corofunc):
+        assert not args and not kwargs, "arguments can't be passed to an already instantiated coroutine"
         return corofunc
 
     if not iscoroutinefunction(corofunc) and not getattr(corofunc, '_async_thread', False):
         coro = corofunc(*args, **kwargs)
-        if not inspect.iscoroutine(coro):
-            raise TypeError('Could not create coroutine from %s' % corofunc)
+        if not isinstance(coro, collections.abc.Coroutine):
+            raise TypeError(f'Could not create coroutine from {corofunc}')
         return coro
 
     async def context():
@@ -119,56 +112,6 @@ def instantiate_coroutine(corofunc, *args, **kwargs):
         context().send(None)
     except StopIteration as e:
         return e.value
-
-def blocking(func):
-    '''
-    Decorator indicating that a function performs a blocking operation.
-    If called from synchronous Python code, the function runs normally.
-    However, if called from a coroutine, curio arranges for it to run
-    in a thread.
-    '''
-    from . import workers
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        if _from_coroutine():
-            return workers.run_in_thread(func, *args, **kwargs)
-        else:
-            return func(*args, **kwargs)
-    return wrapper
-
-
-def cpubound(func):
-    '''
-    Decorator indicating that a function performs a cpu-intensive operation.
-    If called from synchronous Python code, the function runs normally.
-    However, if called from a coroutine, curio arranges for it to run
-    in a process.
-    '''
-    from . import workers
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        if _from_coroutine():
-            # The use of wrapper in the next statement is not a typo.
-            return workers.run_in_process(wrapper, *args, **kwargs)
-        else:
-            return func(*args, **kwargs)
-    return wrapper
-
-
-def sync_only(func):
-    '''
-    Decorator indicating that a function is only valid in synchronous code.
-    '''
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        if _from_coroutine():
-            raise SyncIOError('{} may only be used in synchronous code'.format(func.__name__))
-        else:
-            return func(*args, **kwargs)
-    return wrapper
-
 
 def awaitable(syncfunc):
     '''
@@ -199,12 +142,11 @@ def awaitable(syncfunc):
     '''
     def decorate(asyncfunc):
         if inspect.signature(syncfunc) != inspect.signature(asyncfunc):
-            raise TypeError('%s and async %s have different signatures' %
-                            (syncfunc.__name__, asyncfunc.__name__))
+            raise TypeError(f'{syncfunc.__name__} and async {asyncfunc.__name__} have different signatures')
 
         @wraps(asyncfunc)
         def wrapper(*args, **kwargs):
-            if _from_coroutine():
+            if from_coroutine():
                 return asyncfunc(*args, **kwargs)
             else:
                 return syncfunc(*args, **kwargs)
@@ -237,7 +179,7 @@ def asyncioable(awaitablefunc):
     def decorate(asyncfunc):
         @wraps(asyncfunc)
         def wrapper(*args, **kwargs):
-            if _from_coroutine():
+            if from_coroutine():
                 # Check if we're Curio or not
                 if curio_running():
                     return awaitablefunc._asyncfunc(*args, **kwargs)
@@ -249,179 +191,44 @@ def asyncioable(awaitablefunc):
         return wrapper
     return decorate
 
-class AsyncABCMeta(ABCMeta):
-    '''
-    Metaclass that gives all of the features of an abstract base class, but
-    additionally enforces coroutine correctness on subclasses. If any method
-    is defined as a coroutine in a parent, it must also be defined as a
-    coroutine in any child.
-    '''
-    def __init__(cls, name, bases, methods):
-        coros = {}
-        for base in reversed(cls.__mro__):
-            coros.update((name, val) for name, val in vars(base).items()
-                         if iscoroutinefunction(val))
-
-        for name, val in vars(cls).items():
-            if name in coros and not iscoroutinefunction(val):
-                raise TypeError('Must use async def %s%s' % (name, inspect.signature(val)))
-        super().__init__(name, bases, methods)
-
-class AsyncABC(metaclass=AsyncABCMeta):
-    pass
-
-
-class AsyncInstanceType(AsyncABCMeta):
-    '''
-    Metaclass that allows for asynchronous instance initialization and the
-    __init__() method to be defined as a coroutine.   Usage:
-
-    class Spam(metaclass=AsyncInstanceType):
-        async def __init__(self, x, y):
-            self.x = x
-            self.y = y
-
-    async def main():
-         s = await Spam(2, 3)
-         ...
-    '''
-    @staticmethod
-    def __new__(meta, clsname, bases, attributes):
-        if '__init__' in attributes and not inspect.iscoroutinefunction(attributes['__init__']):
-            raise TypeError('__init__ must be a coroutine')
-        return super().__new__(meta, clsname, bases, attributes)
-
-    async def __call__(cls, *args, **kwargs):
-        self = cls.__new__(cls, *args, **kwargs)
-        await self.__init__(*args, **kwargs)
-        return self
-
-
-class AsyncObject(metaclass=AsyncInstanceType):
-    pass
-
-
-# Dictionary that tracks the "safe" status of async generators with 
-# respect to asynchronous finalization.  Normally this is automatically
-# determined by looking at the code of async generators.  It can
-# be overridden using the @safe_generator decorator below. 
-
-_safe_async_generators = { }      # { code_objects: bool }
-
-def safe_generator(func):
-    _safe_async_generators[func.__code__] = True
-    return func
-
 class finalize(object):
     '''
     Context manager that safely finalizes an asynchronous generator.
     This might be needed if an asynchronous generator uses async functions
     in try-finally and other constructs.
     '''
-
-    _finalized = set()
-
     def __init__(self, aobj):
         self.aobj = aobj
 
     async def __aenter__(self):
-        self._finalized.add(self.aobj)
         return self.aobj
 
     async def __aexit__(self, ty, val, tb):
         if hasattr(self.aobj, 'aclose'):
             await self.aobj.aclose()
-        self._finalized.discard(self.aobj)
-
-    @classmethod
-    def is_finalized(cls, aobj):
-        return aobj in cls._finalized
-
-def is_safe_generator(agen):
-    '''
-    Examine the code of an async generator to see if it appears
-    unsafe with respect to async finalization.  A generator
-    is unsafe if it utilizes any of the following constructs:
-
-    1. Use of async-code in a finally block
-
-       try:
-           yield v
-       finally:
-           await coro()
-
-    2. Use of yield inside an async context manager
-
-       async with m:
-           ...
-           yield v
-           ...
-
-    3. Use of async-code in try-except
-
-       try:
-           yield v
-       except Exception:
-           await coro()
-    '''
-    if agen.ag_code in _safe_async_generators:
-        return True
-
-    def _is_unsafe_block(instr, end_offset=-1, is_generator=False, in_final=False):
-        is_unsafe = False
-        for op in instr:
-            if op.offset == end_offset:
-                in_final = True
-            if op.opname == 'YIELD_VALUE':
-                is_generator = True
-            if op.opname == 'END_FINALLY':
-                return (is_generator, is_unsafe)
-            if op.opname in {'SETUP_FINALLY', 'SETUP_EXCEPT', 'SETUP_ASYNC_WITH'}:
-                is_g, is_u = _is_unsafe_block(instr, op.argval, is_generator, in_final)
-                is_generator |= is_g
-                is_unsafe |= is_u
-            if op.opname == 'YIELD_FROM' and is_generator and in_final:
-                is_unsafe = True
-        return (is_generator, is_unsafe)
-
-    if not _is_unsafe_block(dis.get_instructions(agen.ag_code))[1]:
-        _safe_async_generators[agen.ag_code] = True
-        return True
-    else:
-        return False
 
 
 # This context manager is used to manage the execution of async generators
 # in Python 3.6.  In certain circumstances, they can't be used safely
-# unless finalized properly.  This context manager installs some hooks
-# for dealing with this in Curio.
+# unless finalized properly.  This context manager installs some a hook
+# for detecting lack of finalization.
 
 @contextmanager
 def asyncgen_manager():
     if hasattr(sys, 'get_asyncgen_hooks'):
         old_asyncgen_hooks = sys.get_asyncgen_hooks()
-
-        def _init_async_gen(agen):
-            # It's possible that we've come here through @asynccontextmanager in the contextlib module.
-            # If so, we assume that the generator is being managed properly and allow it through.
-            f = sys._getframe(1)
-            if f.f_code.co_name == '__aenter__' and 'contextlib' in f.f_code.co_filename:
-                return
-
-            # Inspect the code of the generator to see if it might be safe 
-            if not is_safe_generator(agen) and not finalize.is_finalized(agen):
+        def _fini_async_gen(agen):
+            if agen.ag_frame is not None:
                 raise RuntimeError("Async generator with async finalization must be wrapped by\n"
                                    "async with curio.meta.finalize(agen) as agen:\n"
                                    "    async for n in agen:\n"
                                    "         ...\n"
                                    "See PEP 533 for further discussion.")
 
-        sys.set_asyncgen_hooks(_init_async_gen)
+        sys.set_asyncgen_hooks(None, _fini_async_gen)
     try:
         yield
     finally:
         if hasattr(sys, 'get_asyncgen_hooks'):
             sys.set_asyncgen_hooks(*old_asyncgen_hooks)
 
-
-        

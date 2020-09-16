@@ -1,6 +1,4 @@
-import signal
-from curio import run, spawn, SignalQueue, TaskGroup, Queue, tcp_server, CancelledError
-from curio.socket import *
+from curio import run, spawn, TaskGroup, Queue, tcp_server
 
 import logging
 log = logging.getLogger(__name__)
@@ -9,7 +7,8 @@ messages = Queue()
 subscribers = set()
 
 async def dispatcher():
-    async for msg in messages:
+    while True:
+        msg = await messages.get()
         for q in subscribers:
             await q.put(msg)
 
@@ -21,21 +20,18 @@ async def outgoing(client_stream):
     queue = Queue()
     try:
         subscribers.add(queue)
-        async for name, msg in queue:
+        while True:
+            name, msg = await queue.get()
             await client_stream.write(name + b':' + msg)
     finally:
         subscribers.discard(queue)
 
 async def incoming(client_stream, name, local):
-    try:
-        async for line in client_stream:
-            await publish((name, line), local)
-    except CancelledError:
-        await client_stream.write(b'SERVER IS GOING DOWN!\n')
-        raise
+    async for line in client_stream:
+        await publish((name, line), local)
 
 async def chat_handler(client, addr):
-    log.info('Connection from %r', addr) 
+    log.info('Connection from %r', addr)
     local = { 'address': addr }
     async with client:
         client_stream = client.as_stream()
@@ -56,15 +52,6 @@ async def chat_server(host, port):
         await g.spawn(dispatcher)
         await g.spawn(tcp_server, host, port, chat_handler)
 
-async def main(host, port):
-    async with SignalQueue(signal.SIGHUP) as restart:
-        while True:
-            log.info('Starting the server')
-            serv_task = await spawn(chat_server, host, port)
-            await restart.get()
-            log.info('Server shutting down')
-            await serv_task.cancel()
-
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    run(main('', 25000))
+    run(chat_server('', 25000))
